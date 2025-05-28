@@ -1,0 +1,412 @@
+import logging
+import json
+import os
+import random
+from telegram import Update, Bot, ParseMode, ChatMember
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext, ChatMemberHandler
+from functools import wraps
+
+# --- Configuration ---
+BOT_TOKEN = os.environ.get("NUKEM_BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN_HERE")
+ADMIN_USER_IDS = {123456789, 987654321}  # REPLACE with actual admin Telegram User IDs
+USER_DATA_FILE = "nukem_users.json"
+
+# --- NUKEM'S ARSENAL OF WORDS ---
+NUKEM_QUOTES = [
+    "It's time to kick ass and chew bubble gum... and I'm all out of gum.",
+    "Damn, I'm looking good!",
+    "Hail to the king, baby!",
+    "Come get some!",
+    "What are you waiting for, Christmas?",
+    "I've got balls of steel.",
+    "Groovy!",
+    "Let God sort 'em out.",
+    "Nobody steals our chicks... and lives!",
+    "Your face, your ass, what's the difference?",
+    "I'm gonna get medieval on your asses!",
+    "Blow it out your ass!",
+    "Eat shit and die!",
+    "My boot, your face; the perfect couple.",
+    "This is gonna be a blast!",
+    "Always bet on Duke.",
+    "Based. Extremely based.",
+    "That's what I'm talkin' about!",
+    "Get that alien scum!",
+    "Time to deliver the pain!"
+]
+
+NUKEM_REACTIONS_POSITIVE = [
+    "Hell yeah! That's what I'm talkin' about!",
+    "Based and Nukem-pilled.",
+    "Damn straight, maggot!",
+    "Now you're thinking with portals... I mean, with NUKEM power!",
+    "That's some big dick energy right there.",
+    "Sounds like a plan. A kick-ass plan."
+]
+
+NUKEM_REACTIONS_NEGATIVE = [
+    "What in the goddamn...? That sounds like alien talk.",
+    "Are you on somethin', pal? Or just naturally stupid?",
+    "That's about as useful as a screen door on a battleship.",
+    "My grandma could come up with a better idea, and she's... well, never mind."
+]
+
+NUKEM_RATINGS = [
+    "That's a 10 on the NUKEM scale of badassery! Hell yeah!",
+    "Solid play. Almost as good as something I'd do.",
+    "Not bad, for a rookie. Keep it up.",
+    "Meh. Seen better, seen worse. Mostly worse.",
+    "Are you even trying? That was weaker than alien coffee.",
+    "My dog could make a better play, and he's a chihuahua... a *dead* chihuahua.",
+    "What was that, a love tap? Hit 'em like you mean it!"
+]
+
+ALIEN_SCAN_REPORTS = [
+    "Scanners clear. For now. Stay frosty, maggot.",
+    "Detected a blip... nah, just some space junk. Or a really ugly bird.",
+    "High levels of bullshit detected in this sector. Typical.",
+    "Alien activity? Negative. But I did find a half-eaten donut. Score!",
+    "The only alien thing around here is your fashion sense. Kidding! Mostly.",
+    "All quiet on the alien front. Too quiet... Makes me wanna shoot somethin'."
+]
+
+PROJECT_INFO = {
+    "roadmap": "Roadmap? We make the road as we go... and blow stuff up along the way. Q1: More ass-kicking. Q2: More bubblegum (if I find any). Q3: Moon. Q4: Your mom's house. Got a problem?",
+    "tokenomics": "1 Billion $NUKEM. 5% tax - 2% to 'Babes & Ammo Fund' (marketing & development), 3% to 'Reactor Core' (liquidity & burns). Simple. Deadly. Don't like it? Tough.",
+    "website": "Point your browser to www.basednukem.base - if it ain't got explosions, it ain't my site.",
+    "default": "Whatcha want, maggot? Spit it out! Try `/info roadmap`, `/info tokenomics`, or `/info website`."
+}
+
+# --- Logging Setup ---
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# --- User Data Management ---
+def load_users():
+    try:
+        with open(USER_DATA_FILE, 'r') as f:
+            data = json.load(f)
+            return {int(k): v for k, v in data.items()}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+def save_users(users):
+    with open(USER_DATA_FILE, 'w') as f:
+        json.dump(users, f, indent=4)
+
+chat_users = load_users()
+
+# --- Admin Check Decorator ---
+def admin_required(func):
+    @wraps(func)
+    def wrapped(update: Update, context: CallbackContext, *args, **kwargs):
+        user_id = update.effective_user.id
+        if user_id not in ADMIN_USER_IDS:
+            insults = [
+                "Nice try, pencil-neck. This command's for the big boys.",
+                "Whoa there, slick. You ain't got the clearance for that.",
+                "Access denied. Go cry to your mama.",
+                "You? Admin? Ha! That's funnier than a pig in a prom dress."
+            ]
+            update.message.reply_text(random.choice(insults))
+            return
+        return func(update, context, *args, **kwargs)
+    return wrapped
+
+# --- Helper to escape MarkdownV2 ---
+def escape_markdown_v2(text):
+    """Helper function to escape telegram MarkdownV2 special characters."""
+    escape_chars = r'_*[]()~`>#+-=|{}.!'
+    return "".join(f'\\{char}' if char in escape_chars else char for char in str(text))
+
+# --- NUKEM Bot Commands ---
+
+@admin_required
+def start(update: Update, context: CallbackContext) -> None:
+    update.message.reply_text(
+        "Based NUKEM online and ready to party! If you're an admin, type `/help_nukem` to see the real firepower. Everyone else, try not to get any on ya."
+    )
+
+@admin_required
+def help_nukem(update: Update, context: CallbackContext) -> None:
+    help_text = (
+        "Alright, listen up, you privileged bastards! Here's the command console:\n"
+        "`/mentionall <message>` - Yell at *everyone*. Use sparingly, or I'll use *you* for target practice.\n"
+        "`/mention @user1 @user2 <message>` - Point your finger at specific chumps.\n"
+        "`/pin_nukem <message_or_reply>` - Make somethin' stick. Like gum to a boot.\n"
+        "`/info <topic>` - Get the damn intel (roadmap, tokenomics, website).\n"
+        "`/sync_users` - Try to refresh my list of cannon fodder (admins mostly).\n"
+        "`/list_users` - See who's on my shit-list (user list).\n"
+        "`/nukem_quote` - Get a dose of pure, unadulterated wisdom.\n"
+        "`/rate_my_play <your_epic_description>` - Let the Duke judge your so-called 'skills'.\n"
+        "`/alien_scan` - Check if any green-blooded freaks are sniffin' around."
+    )
+    update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN_V2)
+
+def track_user_event(update: Update, context: CallbackContext, action: str) -> None:
+    user = update.effective_user
+    chat_id = update.effective_chat.id
+
+    if not user or user.is_bot:
+        return
+
+    if chat_id not in chat_users:
+        chat_users[chat_id] = {}
+
+    current_username = chat_users[chat_id].get(user.id)
+    new_username = user.username if user.username else f"User_{user.id}" # Fallback if no username
+
+    if current_username != new_username or user.id not in chat_users[chat_id]:
+        logger.info(f"User @{new_username} (ID: {user.id}) {action} in chat {chat_id}")
+        chat_users[chat_id][user.id] = new_username
+        save_users(chat_users)
+        # Optional: Announce new user with flair
+        # if action == "joined":
+        #     context.bot.send_message(chat_id, f"Alright, @{new_username}, welcome to the meat grinder! Try not to suck.")
+
+def message_tracker(update: Update, context: CallbackContext) -> None:
+    """Tracks users who send messages."""
+    if update.message: # Ensure it's a message update
+        track_user_event(update, context, "sent a message")
+
+    # Keyword reaction
+    if update.message and update.message.text:
+        text = update.message.text.lower()
+        if any(keyword in text for keyword in ["based", "nukem", "kick ass", "hail to the king"]):
+            if update.effective_user.id not in ADMIN_USER_IDS: # Don't react to admins to avoid loop/spam
+                context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text=random.choice(NUKEM_REACTIONS_POSITIVE),
+                    reply_to_message_id=update.message.message_id
+                )
+
+def chat_member_update_handler(update: Update, context: CallbackContext) -> None:
+    """Tracks users joining or leaving based on ChatMember updates."""
+    result = update.chat_member
+    if not result: return
+
+    chat_id = result.chat.id
+    user = result.new_chat_member.user
+    status = result.new_chat_member.status
+
+    if user.is_bot: return
+
+    if chat_id not in chat_users: chat_users[chat_id] = {}
+    
+    username_display = user.username if user.username else f"Grunt_{user.id}"
+
+    if status in [ChatMember.MEMBER, ChatMember.ADMINISTRATOR, ChatMember.CREATOR]:
+        if user.id not in chat_users[chat_id] or chat_users[chat_id][user.id] != username_display:
+             logger.info(f"User @{username_display} (ID: {user.id}) joined/updated in chat {chat_id}")
+             chat_users[chat_id][user.id] = username_display
+             save_users(chat_users)
+             # context.bot.send_message(chat_id, f"Looks like @{escape_markdown_v2(username_display)} just crawled in. Don't break anything, newb.", parse_mode=ParseMode.MARKDOWN_V2)
+    elif status in [ChatMember.LEFT, ChatMember.KICKED]:
+        if user.id in chat_users[chat_id]:
+            logger.info(f"User (ID: {user.id}) left/kicked from chat {chat_id}, removing.")
+            # context.bot.send_message(chat_id, f"@{escape_markdown_v2(chat_users[chat_id][user.id])} just bailed. Good riddance or big loss? You decide.")
+            del chat_users[chat_id][user.id]
+            save_users(chat_users)
+
+@admin_required
+def mention_all(update: Update, context: CallbackContext) -> None:
+    chat_id = update.effective_chat.id
+    message_text = " ".join(context.args)
+
+    if not message_text:
+        update.message.reply_text("Spit it out, genius! `/mentionall <your damn message>`")
+        return
+
+    if chat_id not in chat_users or not chat_users[chat_id]:
+        update.message.reply_text("My list's emptier than a politician's promises. No one to yell at.")
+        return
+
+    users_to_mention = [
+        f"[@{escape_markdown_v2(username)}](tg://user?id={user_id})"
+        for user_id, username in chat_users[chat_id].items()
+        if username and not username.startswith("Grunt_") # Only mention users with actual usernames
+    ]
+
+    if not users_to_mention:
+        update.message.reply_text("Looks like these maggots are too shy to set a username. Can't tag ghosts.")
+        return
+
+    MAX_MENTIONS_PER_MSG = 40 # Reduced for safety with longer messages
+    escaped_message = escape_markdown_v2(message_text)
+    base_message = f"*ATTENTION, ALL YOU SLACK-JAWED TROOPERS\\! THE DUKE HAS SPOKEN\\!*\n\n{escaped_message}\n\nTagging the usual suspects:"
+    
+    update.message.reply_text("Alright, lettin' 'em have it with both barrels! This might take a few shots...")
+
+    for i in range(0, len(users_to_mention), MAX_MENTIONS_PER_MSG):
+        chunk = users_to_mention[i:i + MAX_MENTIONS_PER_MSG]
+        mention_block = " ".join(chunk)
+        full_message = f"{base_message}\n{mention_block}"
+
+        if len(full_message) > 4096: # Should be rare with chunking
+            full_message = full_message[:4090] + "\\.\\.\\."
+        try:
+            context.bot.send_message(chat_id=chat_id, text=full_message, parse_mode=ParseMode.MARKDOWN_V2)
+        except Exception as e:
+            logger.error(f"Failed to send mention chunk: {e}")
+            update.message.reply_text(f"Damn it all to hell! Hit a snag: {escape_markdown_v2(str(e))}", parse_mode=ParseMode.MARKDOWN_V2)
+            break
+
+@admin_required
+def mention_specific(update: Update, context: CallbackContext) -> None:
+    args = context.args
+    if not args:
+        update.message.reply_text("Who am I pointing my gun at? Use `/mention @user1 @user2 <message>`")
+        return
+
+    mentions = []
+    message_parts = []
+    for arg in args:
+        if arg.startswith('@'): mentions.append(escape_markdown_v2(arg))
+        else: message_parts.append(arg)
+
+    if not mentions: update.message.reply_text("No @'s? Are you blind or just stupid?"); return
+    if not message_parts: update.message.reply_text("A message, genius! They ain't mind readers."); return
+
+    message_text = escape_markdown_v2(" ".join(message_parts))
+    mention_block = " ".join(mentions)
+    full_message = f"*HEY, YOU LOT\\!* {mention_block}\n\n{message_text}\n\n*That is all\\. Carry on, or don't\\. I don't care\\.*"
+    try:
+        context.bot.send_message(chat_id=update.effective_chat.id, text=full_message, parse_mode=ParseMode.MARKDOWN_V2)
+    except Exception as e:
+        update.message.reply_text(f"Son of a bitch! Couldn't send it: {escape_markdown_v2(str(e))}", parse_mode=ParseMode.MARKDOWN_V2)
+
+@admin_required
+def pin_nukem(update: Update, context: CallbackContext) -> None:
+    chat_id = update.effective_chat.id
+    if update.message.reply_to_message:
+        message_id = update.message.reply_to_message.message_id
+        try:
+            context.bot.pin_chat_message(chat_id, message_id, disable_notification=False)
+            update.message.reply_text("Pinned it. Like a butterfly... a really pissed-off butterfly. *KA-CHUNK!*")
+        except Exception as e:
+            update.message.reply_text(f"Couldn't nail that one down. Error: {escape_markdown_v2(str(e))}", parse_mode=ParseMode.MARKDOWN_V2)
+    else:
+        message_text = " ".join(context.args)
+        if not message_text: update.message.reply_text("Pin *what*? Air? Reply or use `/pin_nukem <your message>`."); return
+        try:
+            sent_message = context.bot.send_message(chat_id, f"*NUKEM COMMAND DECREE\\:*\n{escape_markdown_v2(message_text)}", parse_mode=ParseMode.MARKDOWN_V2)
+            context.bot.pin_chat_message(chat_id, sent_message.message_id, disable_notification=False)
+            update.message.reply_text("Message sent and hammered to the top. Let's see 'em ignore that.")
+        except Exception as e:
+            update.message.reply_text(f"Damn space-worms ate my pin! Error: {escape_markdown_v2(str(e))}", parse_mode=ParseMode.MARKDOWN_V2)
+
+def info(update: Update, context: CallbackContext) -> None:
+    topic = " ".join(context.args).lower() if context.args else "default"
+    response = PROJECT_INFO.get(topic, PROJECT_INFO["default"])
+    header = "*DUKE'S INTEL DROP:*" if topic != "default" else ""
+    update.message.reply_text(f"{header}\n{escape_markdown_v2(response)}", parse_mode=ParseMode.MARKDOWN_V2)
+
+@admin_required
+def list_users(update: Update, context: CallbackContext) -> None:
+    chat_id = update.effective_chat.id
+    if chat_id not in chat_users or not chat_users[chat_id]:
+        update.message.reply_text("My kill list is empty for this chat. Either they're all hiding, or I need new glasses.")
+        return
+
+    user_list_md = [f"\\- @{escape_markdown_v2(username)} \\({escape_markdown_v2(user_id)}\\)" for user_id, username in chat_users[chat_id].items()]
+    response_header = "*CURRENT ROSTER OF POTENTIAL HEROES \\(OR TARGETS\\):*\n"
+    
+    full_response = response_header + "\n".join(user_list_md)
+    if len(full_response) > 4096:
+        update.message.reply_text("Got a whole damn army here... Sending the list in pieces, try to keep up.")
+        current_batch = response_header
+        for item in user_list_md:
+            if len(current_batch) + len(item) + 1 > 4000: # Leave some room
+                context.bot.send_message(chat_id=chat_id, text=current_batch, parse_mode=ParseMode.MARKDOWN_V2)
+                current_batch = ""
+            current_batch += item + "\n"
+        if current_batch: # Send remaining
+            context.bot.send_message(chat_id=chat_id, text=current_batch, parse_mode=ParseMode.MARKDOWN_V2)
+    else:
+        update.message.reply_text(full_response, parse_mode=ParseMode.MARKDOWN_V2)
+
+@admin_required
+def sync_users(update: Update, context: CallbackContext) -> None:
+    chat_id = update.effective_chat.id
+    update.message.reply_text("Attempting recon on the chain of command... My intel on the grunts is usually what they tell me.")
+    try:
+        admins = context.bot.get_chat_administrators(chat_id)
+        admin_list_md = []
+        synced_count = 0
+        if chat_id not in chat_users: chat_users[chat_id] = {}
+        for admin_member in admins:
+            user = admin_member.user
+            if not user.is_bot:
+                username_display = user.username if user.username else f"Admin_{user.id}"
+                if user.id not in chat_users[chat_id] or chat_users[chat_id][user.id] != username_display:
+                    chat_users[chat_id][user.id] = username_display
+                    synced_count +=1
+                admin_list_md.append(f"\\- @{escape_markdown_v2(username_display)}")
+        save_users(chat_users)
+        if admin_list_md:
+            update.message.reply_text(f"Reconfirmed these high\\-ranking badasses \\({synced_count} new/updated\\):\n" + "\n".join(admin_list_md), parse_mode=ParseMode.MARKDOWN_V2)
+        else:
+            update.message.reply_text("Couldn't find any human admins, or they're already perfectly cataloged. How boring.")
+    except Exception as e:
+        update.message.reply_text(f"Recon failed. Maybe I got demoted? Error: {escape_markdown_v2(str(e))}", parse_mode=ParseMode.MARKDOWN_V2)
+
+# --- New NUKEM-Flair Commands ---
+def nukem_quote(update: Update, context: CallbackContext) -> None:
+    """Sends a random Duke Nukem quote."""
+    quote = random.choice(NUKEM_QUOTES)
+    update.message.reply_text(f"*{escape_markdown_v2(quote)}*\n\n \\- The Duke", parse_mode=ParseMode.MARKDOWN_V2)
+
+def rate_my_play(update: Update, context: CallbackContext) -> None:
+    """Rates a user's described play."""
+    play_description = " ".join(context.args)
+    if not play_description:
+        update.message.reply_text("Rate *what*? Your ability to type nothing? `/rate_my_play <describe your awesome play>`")
+        return
+    
+    rating = random.choice(NUKEM_RATINGS)
+    update.message.reply_text(f"Alright, about your so\\-called 'play':\n*{escape_markdown_v2(play_description)}*\n\nDuke's Verdict: *{escape_markdown_v2(rating)}*", parse_mode=ParseMode.MARKDOWN_V2)
+
+def alien_scan(update: Update, context: CallbackContext) -> None:
+    """Gives a NUKEM-style alien scan report."""
+    report = random.choice(ALIEN_SCAN_REPORTS)
+    update.message.reply_text(f"*Sector Scan Initiated\\.\\.\\.*\n\n{escape_markdown_v2(report)}", parse_mode=ParseMode.MARKDOWN_V2)
+
+# --- Main Bot Logic ---
+def main() -> None:
+    if BOT_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN_HERE" or not BOT_TOKEN:
+        logger.error("!!! BOT TOKEN NOT SET! Get one from @BotFather and set NUKEM_BOT_TOKEN env var or in script. !!!")
+        return
+
+    updater = Updater(BOT_TOKEN)
+    dispatcher = updater.dispatcher
+
+    # Admin Commands
+    dispatcher.add_handler(CommandHandler("start", start, filters=Filters.user(ADMIN_USER_IDS))) # Admin only start
+    dispatcher.add_handler(CommandHandler("help_nukem", help_nukem)) # Already admin_required
+    dispatcher.add_handler(CommandHandler("mentionall", mention_all))
+    dispatcher.add_handler(CommandHandler("mention", mention_specific))
+    dispatcher.add_handler(CommandHandler("pin_nukem", pin_nukem))
+    dispatcher.add_handler(CommandHandler("list_users", list_users))
+    dispatcher.add_handler(CommandHandler("sync_users", sync_users))
+
+    # Public Commands
+    dispatcher.add_handler(CommandHandler("info", info))
+    dispatcher.add_handler(CommandHandler("nukem_quote", nukem_quote))
+    dispatcher.add_handler(CommandHandler("rate_my_play", rate_my_play))
+    dispatcher.add_handler(CommandHandler("alien_scan", alien_scan))
+    
+    # Message and Member Handlers (for tracking and reactions)
+    # Make sure this is processed for all users, not just admins for keyword reactions
+    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, message_tracker))
+    dispatcher.add_handler(ChatMemberHandler(chat_member_update_handler, ChatMemberHandler.MY_CHAT_MEMBER | ChatMemberHandler.CHAT_MEMBER))
+
+    logger.info("Based NUKEM Bot locked, loaded, and starting polling... Time to paint the town red.")
+    updater.start_polling()
+    updater.idle()
+    logger.info("Based NUKEM signing off. I need a drink... and a bigger gun.")
+
+if __name__ == '__main__':
+    main()
