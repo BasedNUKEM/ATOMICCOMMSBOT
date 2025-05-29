@@ -11,8 +11,8 @@ pip install -r requirements.txt
 
 2. Create a .env file in the project root with your bot token and admin IDs:
 ```env
-NUKEM_BOT_TOKEN=your_bot_token_here
-ADMIN_USER_IDS=123456789,987654321
+NUKEM_BOT_TOKEN=7755487759:AAFVG3LYSyl-lopvPEvUiua9Cl86Hk0uX-w
+ADMIN_USER_IDS=7898354400
 ```
 
 Replace `your_bot_token_here` with your bot token from @BotFather, and add your Telegram user IDs (comma-separated) for admin access.
