@@ -9,10 +9,11 @@ DB_NAME = "nukem_bot"
 NUKEM_BOT_TOKEN = "7755487759:AAFVG3LYSy1-1opvPEvUiua9C186Hk0uX-we"
 ADMIN_USER_IDS = [123456789, 987654321]
 MONGO_URI = "mongodb://localhost:27017/"
-DB_NAME=nukem_botNUKEM_BOT_TOKEN=7755487759:AAFVG3LYSy1-1opvPEvUiua9C186Hk0uX-w
-ADMIN_USER_IDS=123456789,987654321
-MONGO_URI=mongodb://localhost:27017/
-DB_NAME=nukem_bot# --- Imports ---
+DB_NAME = "nukem_bot"
+NUKEM_BOT_TOKEN = "7755487759:AAFVG3LYSy1-1opvPEvUiua9C186Hk0uX-w"
+ADMIN_USER_IDS = [123456789, 987654321]
+MONGO_URI = "mongodb://localhost:27017/"
+DB_NAME = "nukem_bot"  # --- Imports ---
 import logging
 import json
 import os
@@ -21,7 +22,6 @@ import time
 import random
 import signal
 import atexit
-import telegram
 from datetime import datetime, timedelta
 from collections import defaultdict
 from dotenv import load_dotenv
@@ -143,45 +143,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # --- User Data Management ---
-def load_users():
-    """Load user data from JSON file with backup and error handling."""
-    try:
-        with open(USER_DATA_FILE, 'r') as f:
-            data = json.load(f)
-            return {int(k): v for k, v in data.items()}
-    except FileNotFoundError:
-        logger.info(f"{USER_DATA_FILE} not found. Starting with empty user list.")
-        return {}
-    except json.JSONDecodeError as e:
-        backup_file = f"{USER_DATA_FILE}.bak"
-        logger.error(f"Error reading {USER_DATA_FILE}: {e}. Trying backup...")
-        try:
-            if os.path.exists(backup_file):
-                with open(backup_file, 'r') as f:
-                    data = json.load(f)
-                    return {int(k): v for k, v in data.items()}
-        except Exception as backup_error:
-            logger.error(f"Backup recovery failed: {backup_error}")
-        return {}
-    except Exception as e:
-        logger.error(f"Unexpected error loading users: {e}")
-        return {}
-
-def save_users(users):
-    """Save user data with backup creation."""
-    backup_file = f"{USER_DATA_FILE}.bak"
-    try:
-        # Create backup of current file if it exists
-        if os.path.exists(USER_DATA_FILE):
-            os.replace(USER_DATA_FILE, backup_file)
-            
-        # Save new data
-        with open(USER_DATA_FILE, 'w') as f:
-            json.dump(users, f, indent=4)
-    except Exception as e:
-        logger.error(f"Failed to save users: {e}")
-
-chat_users = load_users()
+# MongoDB handles all data storage now, no need for file operations
+chat_users = {}  # In-memory cache, populated from MongoDB as needed
 
 # --- Admin Check Decorator ---
 def admin_required(func):
