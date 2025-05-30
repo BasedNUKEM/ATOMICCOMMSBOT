@@ -46,6 +46,7 @@ python nukem_bot.py
 - Monitors chat member updates
 
 ## Notes
-- Bot will save user data to `nukem_users.json`
+
+- Bot uses MongoDB to save user data.
 - Make sure your bot has appropriate permissions in the group
 - Run with Python 3.7+

@@ -1,952 +1,948 @@
-# Environment variables should be in .env file, define as Python variables here
-NUKEM_BOT_TOKEN = "your_bot_token_here"
-ADMIN_USER_IDS = [123456789, 987654321]
-MONGO_URI = "mongodb://localhost:27017/"
-DB_NAME = "nukem_bot"
-ADMIN_USER_IDS=123456789,987654321
-MONGO_URI = "mongodb://localhost:27017/"
-DB_NAME = "nukem_bot"
-NUKEM_BOT_TOKEN = "7755487759:AAFVG3LYSy1-1opvPEvUiua9C186Hk0uX-we"
-ADMIN_USER_IDS = [123456789, 987654321]
-MONGO_URI = "mongodb://localhost:27017/"
-DB_NAME = "nukem_bot"
-NUKEM_BOT_TOKEN = "7755487759:AAFVG3LYSy1-1opvPEvUiua9C186Hk0uX-w"
-ADMIN_USER_IDS = [123456789, 987654321]
-MONGO_URI = "mongodb://localhost:27017/"
-DB_NAME = "nukem_bot"  # --- Imports ---
+"""
+NUKEM Bot - A Telegram bot that brings Duke Nukem's attitude to your group chats.
+Features user tracking, admin commands, karma system, warnings, and Duke's signature style.
+
+This module contains the main bot implementation including:
+- Command handlers
+- User tracking
+- Karma system
+- Warning system
+- Rate limiting
+- Error handling
+"""
+
+# Standard library imports
+import asyncio
+import atexit
 import logging
-import json
 import os
-import sys
-import time
 import random
 import signal
-import atexit
-from datetime import datetime, timedelta
-from collections import defaultdict
+import sys
+from collections import defaultdict # Added import
+from datetime import datetime, timedelta # Added timedelta import
+from functools import wraps # Keep if still used directly, else remove
+from typing import Optional
+
+# Third party imports
 from dotenv import load_dotenv
-from telegram import Update, Bot, ParseMode, ChatMember, ChatPermissions
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext, ChatMemberHandler
-from telegram.error import Unauthorized, BadRequest, TimedOut, NetworkError
-from functools import wraps
-from db import Database
+from telegram import Update, ChatMember, ChatPermissions
+from telegram.constants import ParseMode
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    ChatMemberHandler,
+    ContextTypes,
+    filters
+)
+from telegram.error import NetworkError, BadRequest, TelegramError # Added TelegramError
+
+# Local imports
+from db import Database, DatabaseError
+from constants import (
+    NUKEM_QUOTES, NUKEM_REACTIONS_POSITIVE, NUKEM_REACTIONS_NEGATIVE,
+    NUKEM_RATINGS, ALIEN_SCAN_REPORTS, PROJECT_INFO, ADMIN_USER_IDS,
+    # Comprehensive list of Emojis used by the bot:
+    EMOJI_SUCCESS, EMOJI_ERROR, EMOJI_WARNING, EMOJI_INFO, EMOJI_QUESTION, EMOJI_WAIT,
+    EMOJI_ROCKET, EMOJI_BOMB, EMOJI_NUKE, EMOJI_FIRE, EMOJI_SKULL, EMOJI_ALIEN, EMOJI_ROBOT,
+    EMOJI_TARGET, EMOJI_SHIELD, EMOJI_NO_ENTRY, EMOJI_ADMIN, EMOJI_USER, EMOJI_CHAT,
+    EMOJI_STAR, EMOJI_CHART_UP, EMOJI_CHART_DOWN, EMOJI_LEADERBOARD, EMOJI_BOOK, EMOJI_GEAR,
+    EMOJI_DATABASE, EMOJI_BROADCAST, EMOJI_LINK, EMOJI_SUNGLASSES, EMOJI_WAVE, EMOJI_THINKING,
+    EMOJI_LIGHTBULB, EMOJI_PARTY, EMOJI_STOPWATCH, EMOJI_EYES, EMOJI_BRAIN, EMOJI_SCROLL,
+    EMOJI_GREEN_CIRCLE, EMOJI_RED_CIRCLE, EMOJI_YELLOW_CIRCLE, EMOJI_TOOLS
+)
+from utils import (
+    escape_markdown_v2, 
+    check_rate_limit, command_cooldown, 
+    safe_markdown_message, chunk_message, # rate_limiter instance is in utils
+    error_handler, admin_required, chat_type_allowed
+    # LAST_COMMAND_USAGE is managed within utils.py
+)
+# Import handlers
+from handlers import (
+    start, help_nukem, mention_all, mention_specific, pin_nukem,
+    info, nukem_quote, rate_my_play, alien_scan, list_users, sync_users,
+    get_karma_command, give_karma_command, remove_karma_command,
+    warn_user, unwarn_user, get_warnings_command, mute_user_command, unmute_user_command,
+    show_stats, show_leaderboard,
+    arsenal_command,  # Added arsenal_command
+    message_tracker, chat_member_update_handler, handle_telegram_error
+)
 
 # Load environment variables from .env file
 load_dotenv()
 
 # --- Configuration ---
 BOT_TOKEN = os.getenv("NUKEM_BOT_TOKEN")
-ADMIN_USER_IDS = set([int(id) for id in os.getenv("ADMIN_USER_IDS", "").split(",") if id.strip()])  # Add your admin IDs to .env file
+# ADMIN_USER_IDS is now loaded from constants.py
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/")
 DB_NAME = os.getenv("DB_NAME", "nukem_bot")
-BACKUP_INTERVAL = 3600  # Backup every hour
-
-# Initialize database
-db = Database()
-
-def validate_config():
-    """Validate configuration and environment variables."""
-    if not BOT_TOKEN or BOT_TOKEN == "YOUR_TOKEN_HERE":
-        logger.error("Bot token not properly configured in .env file")
-        return False
-        
-    if not ADMIN_USER_IDS:
-        logger.warning("No admin IDs configured. Bot will run with limited functionality.")
-        return False
-        
-    for admin_id in ADMIN_USER_IDS:
-        if not isinstance(admin_id, int):
-            logger.error(f"Invalid admin ID format: {admin_id}")
-            return False
-            
-    # Test database connection
-    try:
-        db.client.server_info()
-        logger.info("Successfully connected to MongoDB")
-    except Exception as e:
-        logger.error(f"Failed to connect to MongoDB: {e}")
-        return False
-            
-    return True
-
-# --- NUKEM'S ARSENAL OF WORDS ---
-NUKEM_QUOTES = [
-    "It's time to kick ass and chew bubble gum... and I'm all out of gum.",
-    "Damn, I'm looking good!",
-    "Hail to the king, baby!",
-    "Come get some!",
-    "What are you waiting for, Christmas?",
-    "I've got balls of steel.",
-    "Groovy!",
-    "Let God sort 'em out.",
-    "Nobody steals our chicks... and lives!",
-    "Your face, your ass, what's the difference?",
-    "I'm gonna get medieval on your asses!",
-    "Blow it out your ass!",
-    "Eat shit and die!",
-    "My boot, your face; the perfect couple.",
-    "This is gonna be a blast!",
-    "Always bet on Duke.",
-    "Based. Extremely based.",
-    "That's what I'm talkin' about!",
-    "Get that alien scum!",
-    "Time to deliver the pain!"
-]
-
-NUKEM_REACTIONS_POSITIVE = [
-    "Hell yeah! That's what I'm talkin' about!",
-    "Based and Nukem-pilled.",
-    "Damn straight, maggot!",
-    "Now you're thinking with portals... I mean, with NUKEM power!",
-    "That's some big dick energy right there.",
-    "Sounds like a plan. A kick-ass plan."
-]
-
-NUKEM_REACTIONS_NEGATIVE = [
-    "What in the goddamn...? That sounds like alien talk.",
-    "Are you on somethin', pal? Or just naturally stupid?",
-    "That's about as useful as a screen door on a battleship.",
-    "My grandma could come up with a better idea, and she's... well, never mind."
-]
-
-NUKEM_RATINGS = [
-    "That's a 10 on the NUKEM scale of badassery! Hell yeah!",
-    "Solid play. Almost as good as something I'd do.",
-    "Not bad, for a rookie. Keep it up.",
-    "Meh. Seen better, seen worse. Mostly worse.",
-    "Are you even trying? That was weaker than alien coffee.",
-    "My dog could make a better play, and he's a chihuahua... a *dead* chihuahua.",
-    "What was that, a love tap? Hit 'em like you mean it!"
-]
-
-ALIEN_SCAN_REPORTS = [
-    "Scanners clear. For now. Stay frosty, maggot.",
-    "Detected a blip... nah, just some space junk. Or a really ugly bird.",
-    "High levels of bullshit detected in this sector. Typical.",
-    "Alien activity? Negative. But I did find a half-eaten donut. Score!",
-    "The only alien thing around here is your fashion sense. Kidding! Mostly.",
-    "All quiet on the alien front. Too quiet... Makes me wanna shoot somethin'."
-]
-
-PROJECT_INFO = {
-    "roadmap": "Roadmap? We make the road as we go... and blow stuff up along the way. Q1: More ass-kicking. Q2: More bubblegum (if I find any). Q3: Moon. Q4: Your mom's house. Got a problem?",
-    "tokenomics": "1 Billion $NUKEM. 5% tax - 2% to 'Babes & Ammo Fund' (marketing & development), 3% to 'Reactor Core' (liquidity & burns). Simple. Deadly. Don't like it? Tough.",
-    "website": "Point your browser to www.basednukem.base - if it ain't got explosions, it ain't my site.",
-    "default": "Whatcha want, maggot? Spit it out! Try `/info roadmap`, `/info tokenomics`, or `/info website`."
-}
 
 # --- Logging Setup ---
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    level=logging.INFO # Changed to INFO for production, DEBUG can be too verbose
 )
 logger = logging.getLogger(__name__)
 
-# --- User Data Management ---
-# MongoDB handles all data storage now, no need for file operations
-chat_users = {}  # In-memory cache, populated from MongoDB as needed
+# --- Database Setup ---
+db: Optional[Database] = None
 
-# --- Admin Check Decorator ---
-def admin_required(func):
-    @wraps(func)
-    def wrapped(update: Update, context: CallbackContext, *args, **kwargs):
-        user_id = update.effective_user.id
-        if user_id not in ADMIN_USER_IDS:
-            insults = [
-                "Nice try, pencil-neck. This command's for the big boys.",
-                "Whoa there, slick. You ain't got the clearance for that.",
-                "Access denied. Go cry to your mama.",
-                "You? Admin? Ha! That's funnier than a pig in a prom dress."
-            ]
-            update.message.reply_text(random.choice(insults))
-            return
-        return func(update, context, *args, **kwargs)
-    return wrapped
-
-# --- Helper to escape MarkdownV2 ---
-def escape_markdown_v2(text):
-    """Helper function to escape telegram MarkdownV2 special characters."""
-    escape_chars = r'_*[]()~`>#+-=|{}.!'
-    return "".join(f'\\{char}' if char in escape_chars else char for char in str(text))
-
-# --- Rate Limiting ---
-
-# Rate limiting configuration
-RATE_LIMIT_MESSAGES = 5  # messages
-RATE_LIMIT_PERIOD = 60   # seconds
-MESSAGE_TIMESTAMPS = defaultdict(list)  # user_id -> list of timestamps
-
-def is_rate_limited(user_id: int) -> bool:
-    """Check if a user has exceeded their rate limit."""
-    current_time = time.time()
-    user_timestamps = MESSAGE_TIMESTAMPS[user_id]
-    
-    # Remove timestamps older than the rate limit period
-    while user_timestamps and user_timestamps[0] < current_time - RATE_LIMIT_PERIOD:
-        user_timestamps.pop(0)
-    
-    # Add current timestamp
-    user_timestamps.append(current_time)
-    
-    # Check if user has exceeded rate limit
-    return len(user_timestamps) > RATE_LIMIT_MESSAGES
-
-def check_rate_limit(func):
-    """Decorator to add rate limiting to commands."""
-    @wraps(func)
-    def wrapped(update: Update, context: CallbackContext, *args, **kwargs):
-        user_id = update.effective_user.id
-        
-        # Admins bypass rate limiting
-        if user_id in ADMIN_USER_IDS:
-            return func(update, context, *args, **kwargs)
-            
-        if is_rate_limited(user_id):
-            insults = [
-                "Slow down, speed racer! You're typing faster than my bullets fly!",
-                "Cool your jets! Even I need to reload sometimes.",
-                "RATE LIMITED, maggot! Try again in a minute.",
-                "What are you, a machine gun? Pace yourself!"
-            ]
-            update.message.reply_text(random.choice(insults))
-            return None
-            
-        return func(update, context, *args, **kwargs)
-    return wrapped
-
-# --- Cooldown Management ---
-COMMAND_COOLDOWNS = {
-    "mentionall": 300,  # 5 minutes
-    "pin_nukem": 60,    # 1 minute
-    "alien_scan": 30,   # 30 seconds
-}
-
-LAST_COMMAND_USAGE = defaultdict(lambda: defaultdict(datetime.fromtimestamp(0).timestamp))
-
-def command_cooldown(command_name: str):
-    """Decorator to add cooldown to commands."""
-    def decorator(func):
-        @wraps(func)
-        def wrapped(update: Update, context: CallbackContext, *args, **kwargs):
-            user_id = update.effective_user.id
-            current_time = datetime.now().timestamp()
-            
-            # Admins bypass cooldown
-            if user_id in ADMIN_USER_IDS:
-                return func(update, context, *args, **kwargs)
-            
-            last_usage = LAST_COMMAND_USAGE[command_name][user_id]
-            cooldown = COMMAND_COOLDOWNS.get(command_name, 0)
-            
-            if current_time - last_usage < cooldown:
-                remaining = int(cooldown - (current_time - last_usage))
-                responses = [
-                    f"Command's still recharging, maggot! {remaining}s left.",
-                    f"My {command_name} cannon needs {remaining} more seconds!",
-                    f"Patience, rookie! {remaining}s cooldown remaining.",
-                    f"Can't do that for {remaining}s. Even Duke needs a breather!"
-                ]
-                update.message.reply_text(random.choice(responses))
-                return None
-                
-            LAST_COMMAND_USAGE[command_name][user_id] = current_time
-            return func(update, context, *args, **kwargs)
-        return wrapped
-    return decorator
-
-# --- NUKEM Bot Commands ---
-
-@admin_required
-def start(update: Update, context: CallbackContext) -> None:
-    update.message.reply_text(
-        "Based NUKEM online and ready to party! If you're an admin, type `/help_nukem` to see the real firepower. Everyone else, try not to get any on ya."
-    )
-
-@admin_required
-def help_nukem(update: Update, context: CallbackContext) -> None:
-    help_text = (
-        "Alright, listen up, you privileged bastards! Here's the command console:\n\n"
-        "*Basic Commands:*\n"
-        "`/mentionall <message>` - Yell at *everyone*\\. Use sparingly\\, or I'll use *you* for target practice\\.\n"
-        "`/mention @user1 @user2 <message>` - Point your finger at specific chumps\\.\n"
-        "`/pin_nukem <message_or_reply>` - Make somethin' stick\\. Like gum to a boot\\.\n"
-        "`/info <topic>` - Get the damn intel \\(roadmap\\, tokenomics\\, website\\)\\.\n"
-        "`/nukem_quote` - Get a dose of pure\\, unadulterated wisdom\\.\n"
-        "`/rate_my_play <your_epic_description>` - Let the Duke judge your so\\-called 'skills'\\.\n"
-        "`/alien_scan` - Check if any green\\-blooded freaks are sniffin' around\\.\n\n"
-        "*User Management:*\n"
-        "`/sync_users` - Try to refresh my list of cannon fodder \\(admins mostly\\)\\.\n"
-        "`/list_users` - See who's on my shit\\-list \\(user list\\)\\.\n"
-        "`/karma @user` - Check someone's karma level\\.\n"
-        "`/give_karma @user [reason]` - Award karma to a worthy soldier\\.\n"
-        "`/remove_karma @user [reason]` - Take karma from a disappointment\\.\n\n"
-        "*Moderation:*\n"
-        "`/warn @user [reason]` - Issue a warning to a troublemaker\\.\n"
-        "`/unwarn @user` - Remove a warning if they've learned their lesson\\.\n"
-        "`/warnings @user` - Check someone's rap sheet\\."
-    )
-    update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN_V2)
-
-# --- Chat Type Management ---
-def chat_type_allowed(allowed_types: list):
-    """Decorator to restrict commands to specific chat types."""
-    def decorator(func):
-        @wraps(func)
-        def wrapped(update: Update, context: CallbackContext, *args, **kwargs):
-            chat_type = update.effective_chat.type
-            if chat_type not in allowed_types:
-                responses = [
-                    f"Wrong battlefield, soldier! This command only works in {', '.join(allowed_types)}.",
-                    f"Can't do that here! Move to {', '.join(allowed_types)} first.",
-                    f"Command restricted to {', '.join(allowed_types)}. Know your arena!"
-                ]
-                update.message.reply_text(random.choice(responses))
-                return None
-            return func(update, context, *args, **kwargs)
-        return wrapped
-    return decorator
-
-# --- Apply chat type restrictions to commands ---
-@chat_type_allowed(['group', 'supergroup'])
-@command_cooldown("mentionall")
-@admin_required
-def mention_all(update: Update, context: CallbackContext) -> None:
-    chat_id = update.effective_chat.id
-    message_text = " ".join(context.args)
-
-    if not message_text:
-        update.message.reply_text("Spit it out, genius! `/mentionall <your damn message>`")
-        return
-
-    if chat_id not in chat_users or not chat_users[chat_id]:
-        update.message.reply_text("My list's emptier than a politician's promises. No one to yell at.")
-        return
-
-    users_to_mention = [
-        f"[@{escape_markdown_v2(username)}](tg://user?id={user_id})"
-        for user_id, username in chat_users[chat_id].items()
-        if username and not username.startswith("Grunt_") # Only mention users with actual usernames
-    ]
-
-    if not users_to_mention:
-        update.message.reply_text("Looks like these maggots are too shy to set a username. Can't tag ghosts.")
-        return
-
-    MAX_MENTIONS_PER_MSG = 40 # Reduced for safety with longer messages
-    escaped_message = escape_markdown_v2(message_text)
-    base_message = f"*ATTENTION, ALL YOU SLACK-JAWED TROOPERS\\! THE DUKE HAS SPOKEN\\!*\n\n{escaped_message}\n\nTagging the usual suspects:"
-    
-    update.message.reply_text("Alright, lettin' 'em have it with both barrels! This might take a few shots...")
-
-    for i in range(0, len(users_to_mention), MAX_MENTIONS_PER_MSG):
-        chunk = users_to_mention[i:i + MAX_MENTIONS_PER_MSG]
-        mention_block = " ".join(chunk)
-        full_message = f"{base_message}\n{mention_block}"
-        
-        if len(full_message) > 4096: # Should be rare with chunking
-            full_message = full_message[:4090] + "\\.\\.\\."
-            
-        try:
-            context.bot.send_message(chat_id=chat_id, text=full_message, parse_mode=ParseMode.MARKDOWN_V2)
-        except Exception as e:
-            logger.error(f"Failed to send mention chunk: {e}")
-            update.message.reply_text(f"Damn it all to hell! Hit a snag: {escape_markdown_v2(str(e))}", parse_mode=ParseMode.MARKDOWN_V2)
-            break
-
-@admin_required
-def mention_specific(update: Update, context: CallbackContext) -> None:
-    args = context.args
-    if not args:
-        update.message.reply_text("Who am I pointing my gun at? Use `/mention @user1 @user2 <message>`")
-        return
-
-    mentions = []
-    message_parts = []
-    for arg in args:
-        if arg.startswith('@'): mentions.append(escape_markdown_v2(arg))
-        else: message_parts.append(arg)
-
-    if not mentions: update.message.reply_text("No @'s? Are you blind or just stupid?"); return
-    if not message_parts: update.message.reply_text("A message, genius! They ain't mind readers."); return
-
-    message_text = escape_markdown_v2(" ".join(message_parts))
-    mention_block = " ".join(mentions)
-    full_message = f"*HEY, YOU LOT\\!* {mention_block}\n\n{message_text}\n\n*That is all\\. Carry on, or don't\\. I don't care\\.*"
+async def setup_database():
+    """Initialize database connection with error handling."""
+    global db
     try:
-        context.bot.send_message(chat_id=update.effective_chat.id, text=full_message, parse_mode=ParseMode.MARKDOWN_V2)
-    except Exception as e:
-        update.message.reply_text(f"Son of a bitch! Couldn't send it: {escape_markdown_v2(str(e))}", parse_mode=ParseMode.MARKDOWN_V2)
+        db = Database() # MONGO_URI and DB_NAME are accessible globally
+        await db.ensure_async_setup()
+        logger.info(f"{EMOJI_DATABASE}{EMOJI_SUCCESS} Successfully initialized and set up asynchronous database connection")
+        return True
+    except DatabaseError as e:
+        logger.error(f"{EMOJI_DATABASE}{EMOJI_ERROR} Failed to initialize database (DatabaseError): {e}", exc_info=True)
+        return False
+    except Exception as e: # General exception
+        logger.error(f"{EMOJI_DATABASE}{EMOJI_ERROR} Failed to initialize database (General Exception): {e}", exc_info=True)
+        return False
 
-@admin_required
-@command_cooldown("pin_nukem")
-def pin_nukem(update: Update, context: CallbackContext) -> None:
-    chat_id = update.effective_chat.id
-    if update.message.reply_to_message:
-        message_id = update.message.reply_to_message.message_id
-        try:
-            context.bot.pin_chat_message(chat_id, message_id, disable_notification=False)
-            update.message.reply_text("Pinned it. Like a butterfly... a really pissed-off butterfly. *KA-CHUNK!*")
-        except Exception as e:
-            update.message.reply_text(f"Couldn't nail that one down. Error: {escape_markdown_v2(str(e))}", parse_mode=ParseMode.MARKDOWN_V2)
-    else:
-        message_text = " ".join(context.args)
-        if not message_text: update.message.reply_text("Pin *what*? Air? Reply or use `/pin_nukem <your message>`."); return
-        try:
-            sent_message = context.bot.send_message(chat_id, f"*NUKEM COMMAND DECREE\\:*\n{escape_markdown_v2(message_text)}", parse_mode=ParseMode.MARKDOWN_V2)
-            context.bot.pin_chat_message(chat_id, sent_message.message_id, disable_notification=False)
-            update.message.reply_text("Message sent and hammered to the top. Let's see 'em ignore that.")
-        except Exception as e:
-            update.message.reply_text(f"Damn space-worms ate my pin! Error: {escape_markdown_v2(str(e))}", parse_mode=ParseMode.MARKDOWN_V2)
+# --- Resource Cleanup ---
+async def cleanup():
+    """Cleanup resources before shutdown."""
+    global db  # pylint: disable=global-statement
+    if db:
+        db.close() # This is now an async method in db.py
+        logger.info(f"{EMOJI_TOOLS} Database connections closed")
 
-@check_rate_limit
-@chat_type_allowed(['private', 'group', 'supergroup'])
-def info(update: Update, context: CallbackContext) -> None:
-    topic = " ".join(context.args).lower() if context.args else "default"
-    response = PROJECT_INFO.get(topic, PROJECT_INFO["default"])
-    header = "*DUKE'S INTEL DROP:*" if topic != "default" else ""
-    update.message.reply_text(f"{header}\n{escape_markdown_v2(response)}", parse_mode=ParseMode.MARKDOWN_V2)
-
-@admin_required
-def list_users(update: Update, context: CallbackContext) -> None:
-    chat_id = update.effective_chat.id
-    users = db.get_chat_users(chat_id)
+# --- Configuration Validation ---
+async def validate_config():
+    """Validate configuration and environment variables."""
+    if not BOT_TOKEN or BOT_TOKEN == "YOUR_TOKEN_HERE":
+        logger.error(f"{EMOJI_ERROR} Critical: Bot token not properly configured in .env file. Bot cannot start.")
+        return False
     
-    if not users:
-        safe_markdown_message(update, "My kill list is empty for this chat\\. Either they're all hiding, or I need new glasses\\.", reply_to=True)
-        return
+    # ADMIN_USER_IDS is imported from constants.py where it's loaded and validated.
+    # constants.py prints its own warnings/errors if ADMIN_USER_IDS is missing or malformed.
+    if not ADMIN_USER_IDS: # Check the imported set from constants
+        logger.warning(f"{EMOJI_WARNING} ADMIN_USER_IDS is empty (checked in nukem_bot.py after import). Ensure it's set correctly in .env and loaded by constants.py. Admin commands might not be restricted as expected globally, relying on chat admin checks where applicable.")
+        # Depending on requirements, you might return False or allow continuation.
+        # For now, allowing continuation as some bots might operate without global admins.
 
-    user_list_md = []
-    for user in users:
-        username = escape_markdown_v2(user['username'])
-        user_id = escape_markdown_v2(str(user['user_id']))
-        karma = db.get_karma(chat_id, user['user_id'])
-        warnings = len(db.get_warnings(chat_id, user['user_id']))
-        status = f"⭐ {karma}" if karma else ""
-        status += f" 🚨 {warnings}" if warnings else ""
-        status = f" \\[{escape_markdown_v2(status)}\\]" if status else ""
-        
-        user_list_md.append(f"\\- @{username} \\({user_id}\\){status}")
+    if not MONGO_URI or not DB_NAME:
+        logger.error(f"{EMOJI_ERROR} Critical: MONGO_URI or DB_NAME not configured. Database connection will fail.")
+        return False
 
-    response_header = "*CURRENT ROSTER OF POTENTIAL HEROES \\(OR TARGETS\\):*\n"
-    full_response = response_header + "\n".join(user_list_md)
-    
-    chunks = chunk_message(full_response)
-    if len(chunks) > 1:
-        safe_markdown_message(update, "Got a whole damn army here\\.\\.\\. Sending the list in pieces, try to keep up\\.", reply_to=True)
-        
-    for chunk in chunks:
-        safe_markdown_message(update, chunk)
+    if not await setup_database(): # This now calls the async setup_database
+        logger.error(f"{EMOJI_ERROR} Critical: Database setup failed. Bot cannot start.")
+        return False
+    logger.info(f"{EMOJI_SUCCESS} Configuration validated successfully.")
+    return True
 
-@admin_required
-def sync_users(update: Update, context: CallbackContext) -> None:
-    chat_id = update.effective_chat.id
-    update.message.reply_text("Attempting recon on the chain of command... My intel on the grunts is usually what they tell me.")
+# --- Signal Handling & Graceful Shutdown ---
+def signal_handler(signum, frame):
+    """Handle termination signals gracefully."""
+    logger.info(f"{EMOJI_WARNING} Received signal {signum}. Initiating graceful shutdown...")
+    # The atexit handler will manage the async cleanup.
+    # Forcing exit here ensures the process terminates after logging.
+    sys.exit(0)
+
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
+
+def _atexit_cleanup():
+    logger.info(f"{EMOJI_WAIT} Running cleanup tasks at exit...")
     try:
-        admins = context.bot.get_chat_administrators(chat_id)
-        admin_list_md = []
-        synced_count = 0
-
-        for admin_member in admins:
-            user = admin_member.user
-            if not user.is_bot:
-                username_display = user.username if user.username else f"Admin_{user.id}"
-                current_user = db.get_user(chat_id, user.id)
-                
-                if not current_user or current_user.get('username') != username_display:
-                    db.add_or_update_user(chat_id, user.id, username_display, "administrator")
-                    synced_count += 1
-                    
-                admin_list_md.append(f"\\- @{escape_markdown_v2(username_display)}")
-        
-        if admin_list_md:
-            update.message.reply_text(
-                f"Reconfirmed these high\\-ranking badasses \\({synced_count} new/updated\\):\n" + 
-                "\n".join(admin_list_md),
-                parse_mode=ParseMode.MARKDOWN_V2
-            )
+        loop = asyncio.get_running_loop()
+        if loop.is_running():
+            # Create a task for cleanup, but don't necessarily wait for it here
+            # as atexit might not play well with blocking calls.
+            # The loop should ideally process it before full exit.
+            loop.create_task(cleanup())
+            logger.info(f"{EMOJI_INFO} Asynchronous cleanup task scheduled.")
         else:
-            update.message.reply_text("Couldn't find any human admins, or they're already perfectly cataloged. How boring.")
+            # Fallback if loop is not running (e.g. already closed or never started properly)
+            logger.warning(f"{EMOJI_WARNING} Asyncio event loop not running at exit. Attempting to run cleanup in a new loop.")
+            asyncio.run(cleanup()) # Try to run it in a new loop if necessary
+    except RuntimeError: # No running event loop
+        logger.error(f"{EMOJI_ERROR} No asyncio event loop found at exit. Cleanup might be incomplete.")
     except Exception as e:
-        update.message.reply_text(f"Recon failed. Maybe I got demoted? Error: {escape_markdown_v2(str(e))}", parse_mode=ParseMode.MARKDOWN_V2)
+        logger.error(f"{EMOJI_ERROR} Error during atexit cleanup: {e}", exc_info=True)
+    logger.info(f"{EMOJI_SUCCESS} Cleanup process initiated via atexit.")
 
-# --- Stats Tracking ---
+atexit.register(_atexit_cleanup)
+
+
+# --- Stats Tracking (to be moved to bot_setup.py later) ---
 BOT_STATS = {
     'start_time': datetime.now(),
     'commands_used': defaultdict(int),
     'messages_processed': 0,
-    'users_tracked': 0
+    'users_tracked': 0, 
+    'nukem_quotes_delivered': 0,
+    'karma_given': 0,
+    'karma_removed': 0,
+    'users_warned': 0,
+    'users_muted': 0,
+    'errors_occurred': defaultdict(int) # New: Track errors by type/command
 }
 
-def update_stats(command: str = None):
-    """Decorator to track command usage statistics."""
-    def decorator(func):
-        @wraps(func)
-        def wrapped(update: Update, context: CallbackContext, *args, **kwargs):
-            if command:
-                BOT_STATS['commands_used'][command] += 1
-            return func(update, context, *args, **kwargs)
-        return wrapped
-    return decorator
-
-@admin_required
-def show_stats(update: Update, context: CallbackContext) -> None:
-    """Show bot statistics."""
-    uptime = datetime.now() - BOT_STATS['start_time']
-    days = uptime.days
-    hours, remainder = divmod(uptime.seconds, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    
-    # Get total users across all chats
-    total_users = sum(len(users) for users in chat_users.values())
-    
-    stats_message = (
-        "*NUKEM BOT BATTLE REPORT:*\n\n"
-        f"Uptime: {days}d {hours}h {minutes}m {seconds}s\n"
-        f"Total Users Tracked: {total_users}\n"
-        f"Messages Processed: {BOT_STATS['messages_processed']}\n\n"
-        "*Command Usage:*\n"
-    )
-    
-    # Add command usage stats
-    for cmd, count in sorted(BOT_STATS['commands_used'].items()):
-        stats_message += f"/{cmd}: {count} uses\n"
-    
-    safe_markdown_message(update, escape_markdown_v2(stats_message))
-
-# Apply stats tracking to message handler
-def message_tracker(update: Update, context: CallbackContext) -> None:
-    """Tracks users who send messages and handles reactions."""
-    if update.message:  # Ensure it's a message update
-        track_user_event(update, context, "sent a message")
-        
-        # Update stats
+def update_stats(command: Optional[str] = None, message_processed: bool = False,
+                 user_tracked: bool = False, quote_delivered: bool = False,
+                 karma_change: Optional[int] = None, user_warned: bool = False,
+                 user_muted: bool = False, error_occurred: Optional[str] = None) -> None: # Corrected signature
+    """Updates various bot statistics."""
+    if command:
+        BOT_STATS['commands_used'][command] += 1
+    if message_processed:
         BOT_STATS['messages_processed'] += 1
-        db.update_stats("messages_total")
-        db.update_stats("messages_by_chat", chat_id=update.effective_chat.id)
-        db.update_stats("messages_by_user", chat_id=update.effective_chat.id, user_id=update.effective_user.id)
-
-        # Keyword reaction
-        if update.message.text:
-            text = update.message.text.lower()
-            if any(keyword in text for keyword in ["based", "nukem", "kick ass", "hail to the king"]):
-                if update.effective_user.id not in ADMIN_USER_IDS:  # Don't react to admins to avoid loop/spam
-                    context.bot.send_message(
-                        chat_id=update.effective_chat.id,
-                        text=random.choice(NUKEM_REACTIONS_POSITIVE),
-                        reply_to_message_id=update.message.message_id
-                    )
-
-# --- User Tracking ---
-def track_user_event(update: Update, context: CallbackContext, action: str) -> None:
-    """Track user activity and update their status in the database."""
-    user = update.effective_user
-    chat_id = update.effective_chat.id
-
-    if not user or user.is_bot:
-        return
-
-    new_username = user.username if user.username else f"Grunt_{user.id}"
-    current_user = db.get_user(chat_id, user.id)
-
-    if not current_user or current_user.get('username') != new_username:
-        logger.info(f"User @{new_username} (ID: {user.id}) {action} in chat {chat_id}")
-        db.add_or_update_user(chat_id, user.id, new_username)
-        
-    # Update message count and last seen
-    db.increment_user_messages(chat_id, user.id)
-
-# --- Enhanced Markdown Handling ---
-def safe_markdown_message(update: Update, text: str, reply_to: bool = False, **kwargs) -> None:
-    """Safely send a markdown message with fallback to plain text."""
-    try:
-        if reply_to:
-            update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN_V2, **kwargs)
+    if user_tracked: # This should be called when a new user is added to DB
+        BOT_STATS['users_tracked'] += 1 
+    if quote_delivered:
+        BOT_STATS['nukem_quotes_delivered'] += 1
+    if karma_change is not None:
+        if karma_change > 0:
+            BOT_STATS['karma_given'] += karma_change
         else:
-            update.effective_chat.send_message(text, parse_mode=ParseMode.MARKDOWN_V2, **kwargs)
-    except Exception as e:
-        logger.warning(f"Failed to send markdown message: {e}. Falling back to plain text.")
-        # Strip markdown and try again
-        plain_text = text.replace('\\', '').replace('*', '').replace('_', '')
-        if reply_to:
-            update.message.reply_text(plain_text, **kwargs)
-        else:
-            update.effective_chat.send_message(plain_text, **kwargs)
+            BOT_STATS['karma_removed'] += abs(karma_change)
+    if user_warned:
+        BOT_STATS['users_warned'] +=1
+    if user_muted:
+        BOT_STATS['users_muted'] +=1
+    if error_occurred:
+        BOT_STATS['errors_occurred'][error_occurred] += 1
 
-def chunk_message(text: str, max_length: int = 4096) -> list:
-    """Split a message into chunks that respect markdown and message limits."""
-    if len(text) <= max_length:
-        return [text]
+
+# --- User Data Management (Consider moving to a dedicated module if it grows) ---
+# chat_users = {} # In-memory cache, potentially replaced by more direct DB calls or a smarter caching strategy.
+# For now, direct DB calls are preferred for consistency, unless performance dictates caching.
+
+# --- NUKEM Bot Commands (To be moved to handlers.py) ---
+
+# @admin_required
+# @command_cooldown("start") 
+# async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+#     """Handles the /start command with Duke's flair."""
+#     start_message = (
+#         f"{EMOJI_WAVE} Yo! The Duke is in the house! {EMOJI_SUNGLASSES}\\n"
+#         f"Ready to kick ass and chew bubble gum... and I\'m all outta gum.\\n"
+#         f"If you\'re an {EMOJI_ADMIN} admin, type `{escape_markdown_v2('/help_nukem')}` for the full arsenal. "
+#         f"Everyone else, try not to get any on ya. {EMOJI_ROCKET}"
+#     )
+#     await safe_markdown_message(update, start_message, logger, reply_to=True)
+#     update_stats(command="start")
+
+# @admin_required
+# @command_cooldown("help_nukem")
+# async def help_nukem(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+#     """Handles the /help_nukem command, displaying available commands with emojis."""
+#     help_text = (
+#         f"{EMOJI_BOOK} {EMOJI_ADMIN} *Alright, maggots, listen up! Here's the NUKEM command console:*\\\\n\\\\n"
+#         f"{EMOJI_GEAR} *Basic Operations:*\\\\n"
+#         f"`/mentionall <message>` - {EMOJI_BROADCAST} Yell at *everyone*. Use sparingly, or I'll use *you* for target practice.\\\\n"
+#         f"`/mention @user1 @user2 <message>` - {EMOJI_TARGET} Point your finger at specific chumps.\\\\n"
+#         f"`/pin_nukem <message_or_reply>` - {EMOJI_TOOLS} Make somethin' stick. Like gum to a boot.\\\\n"
+#         f"`/info [topic]` - {EMOJI_INFO} Get the damn intel (e.g., roadmap, tokenomics, website). Default for general info.\\\\n"
+#         f"`/nukem_quote` - {EMOJI_BRAIN} Get a dose of pure, unadulterated wisdom from yours truly.\\\\n"
+#         f"`/rate_my_play <description>` - {EMOJI_STAR} Let the Duke judge your so-called 'skills'.\\\\n"
+#         f"`/alien_scan` - {EMOJI_ALIEN} Check if any green-blooded freaks are sniffin' around.\\\\n\\\\n"
         
-    chunks = []
-    current_chunk = ""
-    lines = text.split('\n')
+#         f"{EMOJI_USER} *User Management & Karma:*\\\\n"
+#         # f"`/sync_users` - {EMOJI_TOOLS} Try to refresh my list of cannon fodder (admins mostly).\\\\n" # Potentially intensive, review need
+#         f"`/list_users` - {EMOJI_SCROLL} See who's on my list (user list with karma/warnings).\\\\n"
+#         f"`/karma @user` - {EMOJI_QUESTION} Check someone's karma level.\\\\n"
+#         f"`/give_karma @user [reason]` - {EMOJI_CHART_UP} Award karma to a worthy soldier.\\\\n"
+#         f"`/remove_karma @user [reason]` - {EMOJI_CHART_DOWN} Take karma from a disappointment.\\\\n\\\\n"
+        
+#         f"{EMOJI_SHIELD} *Moderation Arsenal:*\\\\n"
+#         f"`/warn @user [reason]` - {EMOJI_WARNING} Issue a warning to a troublemaker.\\\\n"
+#         f"`/unwarn @user` - {EMOJI_SUCCESS} Remove a warning if they've learned their lesson.\\\\n"
+#         f"`/warnings @user` - {EMOJI_INFO} Check someone's rap sheet (warning history).\\\\n"
+#         f"`/mute @user <duration> [reason]` - {EMOJI_NO_ENTRY} Shut someone up (e.g., 10m, 1h, 1d).\\\\n"
+#         f"`/unmute @user` - {EMOJI_CHAT} Let 'em talk again, if they've learned their place.\\\\n\\\\n"
+        
+#         f"{EMOJI_LEADERBOARD} *Stats & Glory:*\\\\n"
+#         f"`/stats` - {EMOJI_CHART_UP} See how much ass this bot has kicked (bot statistics).\\\\n"
+#         f"`/leaderboard [karma|activity]` - {EMOJI_LEADERBOARD} See who's top dog.\\\\n\\\\n"
+        
+#         f"{EMOJI_ROBOT} *Remember, I'm always watching... and judging. So make it good.* {EMOJI_SUNGLASSES}"
+#     )
+#     await safe_markdown_message(update, help_text, logger, reply_to=True, parse_mode=ParseMode.MARKDOWN_V2)
+#     update_stats(command="help_nukem")
+
+
+# @chat_type_allowed(['group', 'supergroup'])
+# @command_cooldown("mentionall")
+# @admin_required 
+# @error_handler 
+# async def mention_all(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+#     """Mentions all users in a chat with a message, using emojis and improved formatting."""
+#     chat_id = update.effective_chat.id
+#     message_text_parts = context.args
     
-    for line in lines:
-        if len(current_chunk) + len(line) + 1 <= max_length:
-            current_chunk += line + '\n'
-        else:
-            if current_chunk:
-                chunks.append(current_chunk.rstrip())
-            current_chunk = line + '\n'
-            
-    if current_chunk:
-        chunks.append(current_chunk.rstrip())
+#     if not message_text_parts:
+#         await safe_markdown_message(update,
+#             f"{EMOJI_QUESTION} Spit it out, genius! `/mentionall <your damn message>`",
+#             logger, reply_to=True
+#         )
+#         update_stats(command="mentionall", error_occurred="no_message")
+#         return
+
+#     message_text = " ".join(message_text_parts)
+#     escaped_custom_message = escape_markdown_v2(message_text)
+
+#     try:
+#         if db is None: # Ensure db is initialized
+#             await safe_markdown_message(update, f"{EMOJI_DATABASE}{EMOJI_ERROR} Database not connected. Cannot fetch users.", logger, reply_to=True)
+#             update_stats(command="mentionall", error_occurred="db_not_connected")
+#             return
+
+#         users = await db.get_chat_users(chat_id)
+#         if not users:
+#             await safe_markdown_message(update,
+#                 f"{EMOJI_INFO} My list's emptier than a politician's promises. No one to yell at in this chat. {EMOJI_SKULL}",
+#                 logger, reply_to=True
+#             )
+#             update_stats(command="mentionall", error_occurred="no_users_in_db")
+#             return
+
+#         users_to_mention = [
+#             f"[@{escape_markdown_v2(user['username'])}](tg://user?id={user['user_id']})"
+#             for user in users
+#             if user.get('username') and not user['username'].lower().startswith("grunt_") and not user.get('is_bot', False) # Avoid bots and placeholders
+#         ]
+
+#         if not users_to_mention:
+#             await safe_markdown_message(update,
+#                 f"{EMOJI_INFO} Looks like these maggots are too shy to set a username or they're all bots. Can't tag ghosts. {EMOJI_EYES}",
+#                 logger, reply_to=True
+#             )
+#             update_stats(command="mentionall", error_occurred="no_mentionable_users")
+#             return
+
+#         max_mentions_per_msg = 30 # Reduced for safety and readability
         
-    return chunks
+#         # Send initial notification
+#         await safe_markdown_message(update,
+#             f"{EMOJI_BROADCAST}{EMOJI_WAIT} Alright, lettin' 'em have it with both barrels! This might take a few shots to tag everyone with: \"{escaped_custom_message}\"",
+#             logger, reply_to=True
+#         )
+#         await asyncio.sleep(1) # Small pause
+
+#         # Constructing the message header that repeats
+#         header_message = f"{EMOJI_BROADCAST} *ATTENTION, ALL YOU SLACK-JAWED TROOPERS!*\\\\n{escaped_custom_message}\\\\n\\\\nTagging batch:"
+
+#         for i in range(0, len(users_to_mention), max_mentions_per_msg):
+#             user_chunk = users_to_mention[i:i + max_mentions_per_msg]
+#             mention_block = " ".join(user_chunk)
+            
+#             # Message for this specific chunk
+#             chunk_message_content = f"{header_message}\\\\n{mention_block}"
+            
+#             # Use the chunk_message utility from utils.py if the content itself is too long (unlikely with header + 30 mentions)
+#             # For now, assume each chunk_message_content is within limits.
+#             # If it can exceed, then:
+#             # final_messages_to_send = chunk_message(chunk_message_content, 4096)
+#             # for final_chunk in final_messages_to_send:
+#             #    await safe_markdown_message(update, final_chunk, logger, reply_to=False, chat_id_override=chat_id)
+#             #    await asyncio.sleep(1.5) # Increased delay between message sends
+            
+#             try:
+#                 await safe_markdown_message(update, chunk_message_content, logger, reply_to=False, chat_id_override=chat_id)
+#                 await asyncio.sleep(1.5) # Increased delay between message sends
+#             except BadRequest as br_err:
+#                 error_detail = escape_markdown_v2(str(br_err))
+#                 logger.error(f"{EMOJI_ERROR} Failed to send mention chunk (BadRequest): {error_detail} for chat {chat_id}")
+#                 await safe_markdown_message(update, f"{EMOJI_ERROR} Telegram choked on that one: {error_detail}. Some users might not have been tagged.", logger, reply_to=True)
+#                 update_stats(command="mentionall", error_occurred=f"telegram_badrequest_{br_err.message[:20]}")
+#                 break 
+#             except Exception as e:
+#                 error_detail = escape_markdown_v2(str(e))
+#                 logger.error(f"{EMOJI_ERROR} Failed to send mention chunk (Other): {error_detail} for chat {chat_id}", exc_info=True)
+#                 await safe_markdown_message(update, f"{EMOJI_ERROR} Damn it all to hell! Hit a snag: {error_detail}. Some users might not have been tagged.", logger, reply_to=True)
+#                 update_stats(command="mentionall", error_occurred="mention_send_exception")
+#                 break
+#         else: # If loop completed without break
+#             await safe_markdown_message(update, f"{EMOJI_SUCCESS} All mention batches sent for your message: \"{escaped_custom_message}\"", logger, reply_to=True, chat_id_override=chat_id)
+        
+#         update_stats(command="mentionall")
+
+#     except DatabaseError as e:
+#         logger.error(f"{EMOJI_DATABASE}{EMOJI_ERROR} Database error in mention_all for chat {chat_id}: {e}", exc_info=True)
+#         await safe_markdown_message(update,
+#             f"{EMOJI_DATABASE}{EMOJI_ERROR} Had trouble getting the user list. Database is acting up!",
+#             logger, reply_to=True
+#         )
+#         update_stats(command="mentionall", error_occurred="db_error")
+#     except Exception as e: # Catch-all for unexpected issues
+#         logger.error(f"{EMOJI_ERROR} Unexpected error in mention_all for chat {chat_id}: {e}", exc_info=True)
+#         await safe_markdown_message(update, f"{EMOJI_ERROR} Something went seriously sideways with `/mentionall`. Try again later.", logger, reply_to=True)
+#         update_stats(command="mentionall", error_occurred="unexpected_exception")
+
+
+# @admin_required
+# @command_cooldown("mention") # Assuming 'mention' for specific users
+# @error_handler
+# async def mention_specific(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+#     """Mentions specific users with a message, with Duke's style."""
+#     args = context.args
+#     if not args:
+#         await safe_markdown_message(update,
+#             f"{EMOJI_QUESTION} Who am I pointing my gun at, and what am I sayin'? Use `/mention @user1 @user2 <message>`",
+#             logger, reply_to=True
+#         )
+#         update_stats(command="mention_specific", error_occurred="no_args")
+#         return
+
+#     mentions = []
+#     message_parts = []
+#     for arg in args:
+#         if arg.startswith('@') and len(arg) > 1: # Ensure it's a valid mention start
+#             mentions.append(escape_markdown_v2(arg))
+#         else:
+#             message_parts.append(arg)
+
+#     if not mentions:
+#         await safe_markdown_message(update, f"{EMOJI_TARGET}{EMOJI_ERROR} No @'s? Are you blind or just stupid? I need targets!", logger, reply_to=True)
+#         update_stats(command="mention_specific", error_occurred="no_mentions_provided")
+#         return
+#     if not message_parts:
+#         await safe_markdown_message(update, f"{EMOJI_QUESTION} A message, genius! They ain't mind readers. What do you want to tell 'em?", logger, reply_to=True)
+#         update_stats(command="mention_specific", error_occurred="no_message_provided")
+#         return
+
+#     message_text_content = escape_markdown_v2(" ".join(message_parts))
+#     mention_block_content = " ".join(mentions)
+    
+#     full_message_to_send = (
+#         f"{EMOJI_BROADCAST} *HEY, YOU LOT!* {mention_block_content}\\\\n\\\\n"
+#         f"{message_text_content}\\\\n\\\\n"
+#         f"*That is all. Carry on, or don't. I don't care.* {EMOJI_SUNGLASSES}"
+#     )
+    
+#     await safe_markdown_message(update, full_message_to_send, logger, reply_to=False, chat_id_override=update.effective_chat.id)
+#     update_stats(command="mention_specific", karma_change=None) # Example if you track command usage without other specific stats
+
+
+# @admin_required
+# @command_cooldown("pin_nukem")
+# @error_handler
+# async def pin_nukem(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+#     """Pins a message in the chat, either the replied-to message or the command's message, with Duke's commentary."""
+#     chat_id = update.effective_chat.id
+#     message_to_pin_id: Optional[int] = None
+#     pin_message_text_reply: Optional[str] = None
+
+#     if update.message.reply_to_message:
+#         message_to_pin_id = update.message.reply_to_message.message_id
+#         pin_message_text_reply = f"{EMOJI_TOOLS}{EMOJI_SUCCESS} Pinned that sucker! It ain't goin' nowhere."
+#     elif context.args:
+#         text_to_pin_content = " ".join(context.args)
+#         if text_to_pin_content:
+#             try:
+#                 # Send the message first, then pin it.
+#                 # Use safe_markdown_message for consistency, though for pinning, content is key.
+#                 # Let's make the pinned message itself clean.
+#                 sent_message = await update.message.reply_text(text_to_pin_content) # Send as plain text to avoid issues if it's complex
+#                 message_to_pin_id = sent_message.message_id
+#                 pin_message_text_reply = f"{EMOJI_TOOLS}{EMOJI_SUCCESS} Pinned your words of wisdom, hotshot: \"{escape_markdown_v2(text_to_pin_content[:30])}...\""
+#             except TelegramError as e:
+#                 logger.error(f"{EMOJI_ERROR} Failed to send message for pinning: {e}", exc_info=True)
+#                 await safe_markdown_message(update, f"{EMOJI_ERROR} Couldn't even say it to pin it: {escape_markdown_v2(str(e))}", logger, reply_to=True)
+#                 update_stats(command="pin_nukem", error_occurred="send_for_pin_failed")
+#                 return
+#         else:
+#             await safe_markdown_message(update, f"{EMOJI_QUESTION} Pin what? Air? Give me a message or reply to one, meathead.", logger, reply_to=True)
+#             update_stats(command="pin_nukem", error_occurred="no_content_to_pin")
+#             return
+#     else:
+#         await safe_markdown_message(update, f"{EMOJI_QUESTION} Pin what? Reply to a message or type `/pin_nukem <your important message>`.", logger, reply_to=True)
+#         update_stats(command="pin_nukem", error_occurred="no_target_for_pin")
+#         return
+
+#     if message_to_pin_id:
+#         try:
+#             await context.bot.pin_chat_message(chat_id=chat_id, message_id=message_to_pin_id, disable_notification=False)
+#             if pin_message_text_reply:
+#                 await safe_markdown_message(update, pin_message_text_reply, logger, reply_to=True)
+#             else: # Should not happen given the logic above
+#                 await safe_markdown_message(update, f"{EMOJI_TOOLS}{EMOJI_SUCCESS} Pinned it. Like a boss.", logger, reply_to=True)
+#             update_stats(command="pin_nukem")
+#         except BadRequest as e:
+#             logger.error(f"{EMOJI_ERROR} Failed to pin message (BadRequest): {e}", exc_info=True)
+#             error_msg = escape_markdown_v2(str(e))
+#             if "message to pin not found" in error_msg.lower():
+#                  await safe_markdown_message(update, f"{EMOJI_ERROR} Couldn't pin it. Message seems to have vanished. Spooky. {EMOJI_SKULL}", logger, reply_to=True)
+#             elif "not enough rights" in error_msg.lower():
+#                  await safe_markdown_message(update, f"{EMOJI_NO_ENTRY} Couldn't pin it. Looks like I ain't got the juice (permissions) in this chat. {EMOJI_ADMIN}", logger, reply_to=True)
+#             else:
+#                 await safe_markdown_message(update, f"{EMOJI_ERROR} Couldn't pin it. Telegram says: {error_msg}", logger, reply_to=True)
+#             update_stats(command="pin_nukem", error_occurred=f"pin_badrequest_{e.message[:20]}")
+#         except Exception as e: # Other TelegramErrors or general errors
+#             logger.error(f"{EMOJI_ERROR} Failed to pin message (Other): {e}", exc_info=True)
+#             await safe_markdown_message(update, f"{EMOJI_ERROR} Pinning failed. Something blew up: {escape_markdown_v2(str(e))}", logger, reply_to=True)
+#             update_stats(command="pin_nukem", error_occurred="pin_exception")
+
+
+# @check_rate_limit 
+# @chat_type_allowed(['private', 'group', 'supergroup']) 
+# @command_cooldown("info")
+# @error_handler
+# async def info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+#     """Provides information about the project based on the topic given, with Duke's style."""
+#     topic_args = context.args
+#     topic = " ".join(topic_args).lower().strip() if topic_args else "default"
+
+#     # PROJECT_INFO should be a dictionary in constants.py
+#     # Example: PROJECT_INFO = { "default": "...", "roadmap": "...", "tokenomics": "..." }
+    
+#     # Ensure PROJECT_INFO is a dict and topic exists, else provide a default/error
+#     if not isinstance(PROJECT_INFO, dict):
+#         logger.error(f"{EMOJI_ERROR} PROJECT_INFO in constants.py is not a dictionary!")
+#         await safe_markdown_message(update, f"{EMOJI_ERROR} My intel files are corrupted. Can't fetch info right now.", logger, reply_to=True)
+#         update_stats(command="info", error_occurred="project_info_misconfigured")
+#         return
+
+#     response_text = PROJECT_INFO.get(topic)
+    
+#     if response_text is None:
+#         # If specific topic not found, try to give a list of available topics or the default.
+#         available_topics = [key for key in PROJECT_INFO if key != "default"]
+#         if topic == "default" or not available_topics : # Should always have default
+#              response_text = PROJECT_INFO.get("default", "No information available, maggot. Try asking about something specific or check `/help_nukem`.")
+#              header_text = f"{EMOJI_ROBOT} *DUKE'S GENERAL BRIEFING:*"
+#         else:
+#             response_text = (f"Don't have intel on `{escape_markdown_v2(topic)}` specifically, try one of these, badass: "
+#                              f"`{escape_markdown_v2(', '.join(available_topics))}`. "
+#                              f"Or use `/info` for the general lowdown.")
+#             header_text = f"{EMOJI_QUESTION} *INTEL NOT FOUND ON '{escape_markdown_v2(topic).upper()}':*"
+#     else:
+#         header_text = f"{EMOJI_INFO} *DUKE'S INTEL DROP ON '{escape_markdown_v2(topic).upper()}':*" if topic != "default" else f"{EMOJI_ROBOT} *DUKE'S GENERAL BRIEFING:*"
+
+#     # The PROJECT_INFO strings in constants.py should NOT be pre-escaped.
+#     # We escape them here before sending.
+#     full_response_text = f"{header_text}\\\\n{escape_markdown_v2(response_text)}"
+#     await safe_markdown_message(update, full_response_text, logger, reply_to=True)
+#     update_stats(command="info", karma_change=None) # Track command usage
+
+
+# @admin_required
+# @command_cooldown("list_users")
+# @error_handler
+# async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+#     """Lists users in the chat with karma and warnings, for admins, with enhanced output."""
+#     chat_id = update.effective_chat.id
+    
+#     if db is None:
+#         await safe_markdown_message(update, f"{EMOJI_DATABASE}{EMOJI_ERROR} Database connection MIA. Can't fetch the user roster.", logger, reply_to=True)
+#         update_stats(command="list_users", error_occurred="db_not_connected")
+#         return
+
+#     try:
+#         users_data = await db.get_chat_users(chat_id) # This should fetch all users the bot knows in this chat
+#         if not users_data:
+#             await safe_markdown_message(update, f"{EMOJI_INFO} No grunts in the database for this chat. It's lonely here, or they're all ghosts. {EMOJI_SKULL}", logger, reply_to=True)
+#             update_stats(command="list_users", error_occurred="no_users_in_db_for_chat")
+#             return
+
+#         response_lines_list = [f"{EMOJI_SCROLL} *USER ROSTER - FOR {EMOJI_ADMIN} ADMIN EYES ONLY (Chat ID: `{chat_id}`):*\\\\n"]
+#         active_users_count = 0
+
+#         for user_doc in users_data:
+#             user_id = user_doc.get('user_id')
+#             if not user_id: # Should not happen if data is clean
+#                 continue
+
+#             username = user_doc.get('username', f"Grunt_{user_id}")
+#             first_name = user_doc.get('first_name', 'N/A')
+#             status = user_doc.get('status', 'member') # e.g., member, administrator, left, kicked
+            
+#             # Skip users who are no longer part of the chat if that's desired, or indicate status
+#             # For now, list all known users.
+            
+#             karma = await db.get_karma(chat_id, user_id)
+#             warnings_list = await db.get_warnings(chat_id, user_id) # This returns a list of warning dicts
+            
+#             # User's mention string
+#             user_mention = f"[@{escape_markdown_v2(username)}](tg://user?id={user_id})" if username and not username.startswith("Grunt_") else escape_markdown_v2(first_name)
+
+#             user_info_str = (
+#                 f"\\\\- {user_mention} (ID: `{user_id}`)\\\\n"
+#                 f"  Status: `{escape_markdown_v2(status)}` {EMOJI_USER}\\\\n"
+#                 f"  Karma: {karma} {EMOJI_STAR}\\\\n"
+#                 f"  Warnings: {len(warnings_list)} {EMOJI_WARNING}"
+#             )
+#             response_lines_list.append(user_info_str)
+#             active_users_count += 1
+        
+#         response_lines_list.append(f"\\\\nTotal users listed: {active_users_count}")
+
+#         if active_users_count == 0: # All users were filtered or none had user_id
+#             await safe_markdown_message(update, f"{EMOJI_INFO} Found some user records, but couldn't fetch details or all are inactive. Weird. {EMOJI_THINKING}", logger, reply_to=True)
+#             update_stats(command="list_users", error_occurred="no_active_users_to_list")
+#             return
+
+#         full_message_text_users = "\\\\n\\\\n".join(response_lines_list)
+        
+#         # Use the chunk_message utility from utils.py
+#         message_chunks_users = chunk_message(full_message_text_users, 4096) 
+        
+#         if len(message_chunks_users) > 1 :
+#              await safe_markdown_message(update, f"{EMOJI_INFO} User roster is extensive, sending in {len(message_chunks_users)} parts...", logger, reply_to=True)
+#              await asyncio.sleep(0.5)
+
+#         for i, chunk_text_user in enumerate(message_chunks_users):
+#             # Add part number if multiple chunks
+#             chunk_header = f"*Part {i+1}/{len(message_chunks_users)}*\\\\n" if len(message_chunks_users) > 1 else ""
+#             await safe_markdown_message(update, chunk_header + chunk_text_user, logger, reply_to=False, chat_id_override=chat_id) 
+#             if len(message_chunks_users) > 1:
+#                 await asyncio.sleep(1) # Delay between chunks
+        
+#         update_stats(command="list_users")
+
+#     except DatabaseError as e:
+#         logger.error(f"{EMOJI_DATABASE}{EMOJI_ERROR} Database error in list_users for chat {chat_id}: {e}", exc_info=True)
+#         await safe_markdown_message(update, f"{EMOJI_DATABASE}{EMOJI_ERROR} Database is on the fritz. Can't get the user list.", logger, reply_to=True)
+#         update_stats(command="list_users", error_occurred="db_error")
+#     except Exception as e:
+#         logger.error(f"{EMOJI_ERROR} Unexpected error in list_users for chat {chat_id}: {e}", exc_info=True)
+#         await safe_markdown_message(update, f"{EMOJI_ERROR} Couldn't list users. Something went kaboom.", logger, reply_to=True)
+#         update_stats(command="list_users", error_occurred="unexpected_exception")
+
+
+# @admin_required
+# @command_cooldown("sync_users")
+# @error_handler
+# async def sync_users(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+#     """Synchronizes chat administrators with the database, enhancing feedback."""
+#     chat_id = update.effective_chat.id
+#     if not chat_id:
+#         await safe_markdown_message(update, f"{EMOJI_ERROR} Cannot determine chat ID for sync.", logger, reply_to=True)
+#         update_stats(command="sync_users", error_occurred="no_chat_id")
+#         return
+
+#     await safe_markdown_message(update,
+#         f"{EMOJI_GEAR}{EMOJI_WAIT} Performing recon on the chain of command in chat `{chat_id}`... Let's see who's really in charge here.",
+#         logger, reply_to=True
+#     )
+    
+#     if db is None:
+#         await safe_markdown_message(update, f"{EMOJI_DATABASE}{EMOJI_ERROR} Database connection MIA. Cannot sync users.", logger, reply_to=True)
+#         update_stats(command="sync_users", error_occurred="db_not_connected")
+#         return
+
+#     try:
+#         chat_admins = await context.bot.get_chat_administrators(chat_id)
+#         if not chat_admins:
+#             await safe_markdown_message(update, f"{EMOJI_INFO} This place is a ghost town or I can't see 'em. No admins found by Telegram API in chat `{chat_id}`. {EMOJI_SKULL}", logger, reply_to=True)
+#             update_stats(command="sync_users", error_occurred="no_admins_found_api")
+#             return
+
+#         admin_list_md_parts = []
+#         synced_count = 0
+#         newly_added_count = 0
+#         updated_users_count = 0
+#         already_ok_count = 0
+
+#         for admin_member in chat_admins:
+#             user = admin_member.user
+#             if user.is_bot: # Skip bots
+#                 continue
+
+#             user_id = user.id
+#             username = user.username if user.username else f"Admin_{user.id}" # Fallback username
+#             first_name = user.first_name if user.first_name else "N/A"
+#             # Determine status based on ChatMember object
+#             # admin_member.status will be 'creator' or 'administrator'
+#             user_status = admin_member.status 
+
+#             # Add or update user in DB
+#             # The add_or_update_user method in db.py should handle the logic of new vs update.
+#             # We can get a flag back from it, or check existing doc first.
+            
+#             existing_user_doc = await db.get_user(chat_id, user_id)
+            
+#             update_data = {
+#                 'username': username,
+#                 'first_name': first_name,
+#                 'last_seen': datetime.now(),
+#                 'status': user_status, # Ensure this reflects admin status
+#                 'is_bot': False
+#             }
+
+#             if not existing_user_doc:
+#                 await db.add_or_update_user(chat_id, user_id, username, first_name, user_status, is_bot=False)
+#                 newly_added_count += 1
+#                 synced_count +=1
+#                 admin_list_md_parts.append(f"  {EMOJI_GREEN_CIRCLE} {escape_markdown_v2(first_name)} (@{escape_markdown_v2(username)}) - *NEWLY ADDED* as {user_status}")
+#             # Check if update is needed
+#             elif (existing_user_doc.get('username') != username or
+#                   existing_user_doc.get('first_name') != first_name or
+#                   existing_user_doc.get('status') != user_status):
+#                 await db.add_or_update_user(chat_id, user_id, username, first_name, user_status, is_bot=False)
+#                 updated_users_count += 1
+#                 synced_count += 1
+#                 admin_list_md_parts.append(f"  {EMOJI_YELLOW_CIRCLE} {escape_markdown_v2(first_name)} (@{escape_markdown_v2(username)}) - *UPDATED* to {user_status}")
+#             else:
+#                 # No change needed, but good to acknowledge
+#                 # Optionally update last_seen if not done by add_or_update_user for existing unchanged users
+#                 await db.add_or_update_user(chat_id, user_id, username, first_name, user_status, is_bot=False, update_last_seen=True) # ensure last_seen updates
+#                 already_ok_count +=1
+#                 admin_list_md_parts.append(f"  {EMOJI_INFO} {escape_markdown_v2(first_name)} (@{escape_markdown_v2(username)}) - Already synced as {user_status}")
+
+
+#         if not admin_list_md_parts and already_ok_count == 0 : # No human admins found or processed
+#              await safe_markdown_message(update, f"{EMOJI_INFO} No human admins found to sync in chat `{chat_id}`. How peculiar.", logger, reply_to=True)
+#              update_stats(command="sync_users", error_occurred="no_human_admins_to_sync")
+#              return
+
+#         response_summary = [f"{EMOJI_SUCCESS} *Chain of Command Recon Complete for Chat `{chat_id}`!*"]
+#         if newly_added_count > 0:
+#             response_summary.append(f"{EMOJI_GREEN_CIRCLE} {newly_added_count} new admin(s) added to the roster.")
+#         if updated_users_count > 0:
+#             response_summary.append(f"{EMOJI_YELLOW_CIRCLE} {updated_users_count} existing admin record(s) updated.")
+#         if already_ok_count > 0 and newly_added_count == 0 and updated_users_count == 0:
+#              response_summary.append(f"{EMOJI_INFO} All {already_ok_count} admin(s) already perfectly cataloged and up-to-date.")
+#         elif already_ok_count > 0 :
+#              response_summary.append(f"{EMOJI_INFO} {already_ok_count} admin(s) were already up-to-date.")
+        
+#         response_summary.append(f"Total human admins processed: {newly_added_count + updated_users_count + already_ok_count}")
+
+#         if admin_list_md_parts: # Only show list if there were actual changes or detailed view is desired
+#             response_summary.append("\\\\n*Details:*\\\\n" + "\\\\n".join(admin_list_md_parts))
+        
+#         final_response = "\\\\n".join(response_summary)
+        
+#         # Chunk and send
+#         message_chunks = chunk_message(final_response, 4096)
+#         for i, chunk_text in enumerate(message_chunks):
+#             header = f"*Sync Report Part {i+1}/{len(message_chunks)}*\\\\n" if len(message_chunks) > 1 else ""
+#             await safe_markdown_message(update, header + chunk_text, logger, reply_to=False, chat_id_override=chat_id)
+#             if len(message_chunks) > 1: await asyncio.sleep(1)
+        
+#         update_stats(command="sync_users")
+
+#     except DatabaseError as e:
+#         logger.error(f"{EMOJI_DATABASE}{EMOJI_ERROR} Database error during user sync for chat {chat_id}: {e}", exc_info=True)
+#         await safe_markdown_message(update, f"{EMOJI_DATABASE}{EMOJI_ERROR} Database is acting up. Couldn't sync the brass.", logger, reply_to=True)
+#         update_stats(command="sync_users", error_occurred="db_error")
+#     except BadRequest as br_err: # Specifically for Telegram API issues
+#         logger.error(f"{EMOJI_ERROR} Telegram API error during user sync for chat {chat_id}: {br_err}", exc_info=True)
+#         await safe_markdown_message(update, f"{EMOJI_ERROR} Telegram threw a fit trying to get admin list: {escape_markdown_v2(str(br_err))}", logger, reply_to=True)
+#         update_stats(command="sync_users", error_occurred=f"telegram_badrequest_{br_err.message[:20]}")
+#     except Exception as e:
+#         logger.error(f"{EMOJI_ERROR} Unexpected error during user sync for chat {chat_id}: {e}", exc_info=True)
+#         await safe_markdown_message(update, f"{EMOJI_ERROR} Something went haywire during admin sync. Try again, maggot.", logger, reply_to=True)
+#         update_stats(command="sync_users", error_occurred="unexpected_exception")
+
+
+# @admin_required 
+# @command_cooldown("nukem_quote")
+# @error_handler
+# async def nukem_quote(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+#     """Sends a random Nukem quote with appropriate emoji."""
+#     quote = random.choice(NUKEM_QUOTES) # NUKEM_QUOTES from constants.py
+#     # Quotes in constants.py can already include emojis or we add one here
+#     # Assuming quotes are just text, let's add a thematic emoji.
+#     # Or, ensure NUKEM_QUOTES in constants.py are f-strings with emojis.
+#     # For this example, let's assume NUKEM_QUOTES in constants are already formatted with emojis.
+#     # e.g., NUKEM_QUOTES = [ f"{EMOJI_SUNGLASSES} I'm Duke Nukem. And I'm coming to get the rest of you alien bastards!" ]
+    
+#     # If quotes are plain, pick a random relevant emoji:
+#     # quote_emojis = [EMOJI_SUNGLASSES, EMOJI_ROCKET, EMOJI_BOMB, EMOJI_SKULL, EMOJI_FIRE]
+#     # final_quote = f"{random.choice(quote_emojis)} {escape_markdown_v2(quote)}"
+    
+#     # Assuming NUKEM_QUOTES in constants.py are already well-formatted (possibly with markdown and emojis)
+#     # We still need to escape if they are NOT pre-escaped.
+#     # If they ARE pre-escaped or contain markdown, then parse_mode should be handled carefully.
+#     # Let's assume they are plain text and need escaping + emoji.
+    
+#     # Re-evaluating: constants.py now has NUKEM_QUOTES with f-string emojis.
+#     # So, they contain markdown characters if emojis are used like f"{EMOJI_NUKE} text".
+#     # This means the quote string itself contains the emoji unicode.
+#     # If we escape the whole string, emojis might not render as emojis but as their unicode representation.
+#     # Let's assume the quotes in constants.py are ready to be sent with MarkdownV2.
+    
+#     # The NUKEM_QUOTES in constants.py are now f-strings with emojis.
+#     # These are fine to send directly if safe_markdown_message handles ParseMode.MARKDOWN_V2
+#     # and the emojis don't conflict with markdown. Standard emojis are fine.
+    
+#     await safe_markdown_message(update, quote, logger, reply_to=True, parse_mode=ParseMode.MARKDOWN_V2)
+#     update_stats(quote_delivered=True, command="nukem_quote")
+
+
+# @check_rate_limit
+# @command_cooldown("rate_my_play")
+# @error_handler
+# async def rate_my_play(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+#     """Rates the user's described play with Duke's signature commentary and a random rating."""
+#     play_description = " ".join(context.args)
+#     if not play_description:
+#         await safe_markdown_message(update,
+#             f"{EMOJI_QUESTION} Rate what? Your stunning ability to type nothing? `/rate_my_play <your so-called epic play>`",
+#             logger, reply_to=True
+#         )
+#         update_stats(command="rate_my_play", error_occurred="no_description")
+#         return
+
+#     # NUKEM_RATINGS from constants.py, assumed to be formatted with emojis
+#     rating = random.choice(NUKEM_RATINGS) 
+#     escaped_description = escape_markdown_v2(play_description)
+
+#     response = (
+#         f"{EMOJI_TARGET} So you think you're hot stuff with your play: \"_{escaped_description}_\"\\\\n"
+#         f"Let's see... The Duke rates your performance a...\\\\n\\\\n"
+#         f"**{rating}**\\\\n\\\\n"
+#         f"{random.choice([f'Keep practicing, kid. {EMOJI_SUNGLASSES}', f'Not bad... for a rookie. {EMOJI_THINKING}', f'Impressive... most impressive. {EMOJI_ROCKET}'])}"
+#     )
+#     await safe_markdown_message(update, response, logger, reply_to=True)
+#     update_stats(command="rate_my_play")
+
+
+# @check_rate_limit
+# @command_cooldown("alien_scan")
+# @error_handler
+# async def alien_scan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+#     """Performs an 'alien scan' and reports findings with Duke's usual charm."""
+#     # ALIEN_SCAN_REPORTS from constants.py, assumed to be formatted with emojis
+#     report = random.choice(ALIEN_SCAN_REPORTS)
+    
+#     scan_message = (
+#         f"{EMOJI_ALIEN}{EMOJI_WAIT} Scanning for alien slimeballs... Hold your breath, maggot!\\\\n"
+#         f"My high-tech gear is buzzing... beep... boop...\\\\n\\\\n"
+#         f"**Scan Results:** {report}"
+#     )
+#     await safe_markdown_message(update, scan_message, logger, reply_to=True)
+#     update_stats(command="alien_scan")
 
 # --- Karma System Commands ---
-@admin_required
-def give_karma(update: Update, context: CallbackContext) -> None:
-    chat_id = update.effective_chat.id
-    
-    if not context.args or len(context.args) < 1:
-        update.message.reply_text("Who deserves the praise? Use `/give_karma @username [reason]`")
-        return
-        
-    target_username = context.args[0].lstrip('@')
-    reason = " ".join(context.args[1:]) if len(context.args) > 1 else "being awesome"
-    
-    users = db.get_chat_users(chat_id)
-    target_user = next((user for user in users if user['username'] == target_username), None)
-    
-    if not target_user:
-        update.message.reply_text("Can't find that user in my database. Are they even real?")
-        return
-        
-    new_karma = db.update_karma(chat_id, target_user['user_id'], 1)
-    update.message.reply_text(
-        f"@{escape_markdown_v2(target_username)} just leveled up for {escape_markdown_v2(reason)}\\!\n"
-        f"Current karma: {new_karma} ⭐",
-        parse_mode=ParseMode.MARKDOWN_V2
-    )
+# async def _get_target_user_id_and_reason(update: Update, context: ContextTypes.DEFAULT_TYPE) -> tuple[Optional[int], Optional[str], Optional[str]]:
+# """Helper function to get target user ID and reason from a command."""
+# logger.debug("Entering _get_target_user_id_and_reason")
+# message = update.effective_message
+# if not message or not message.text:
+# logger.warning("Message or message.text is None")
+# return None, None, None
 
-@admin_required
-def remove_karma(update: Update, context: CallbackContext) -> None:
-    chat_id = update.effective_chat.id
-    
-    if not context.args or len(context.args) < 1:
-        update.message.reply_text("Who's in trouble? Use `/remove_karma @username [reason]`")
-        return
-        
-    target_username = context.args[0].lstrip('@')
-    reason = " ".join(context.args[1:]) if len(context.args) > 1 else "being a disappointment"
-    
-    users = db.get_chat_users(chat_id)
-    target_user = next((user for user in users if user['username'] == target_username), None)
-    
-    if not target_user:
-        update.message.reply_text("Can't find that user. Maybe they already ran away?")
-        return
-        
-    new_karma = db.update_karma(chat_id, target_user['user_id'], -1)
-    update.message.reply_text(
-        f"@{escape_markdown_v2(target_username)} just lost karma for {escape_markdown_v2(reason)}\\.\n"
-        f"Current karma: {new_karma} ⭐",
-        parse_mode=ParseMode.MARKDOWN_V2
-    )
+# parts = message.text.split(maxsplit=2)
+# target_mention_or_id = None
+# reason = None
+# command_name = parts[0]
 
-@check_rate_limit
-def check_karma(update: Update, context: CallbackContext) -> None:
-    chat_id = update.effective_chat.id
-    user = update.effective_user
-    
-    if context.args and context.args[0].startswith('@'):
-        target_username = context.args[0].lstrip('@')
-        users = db.get_chat_users(chat_id)
-        target_user = next((user for user in users if user['username'] == target_username), None)
-        
-        if not target_user:
-            update.message.reply_text("That user? Never heard of 'em.")
-            return
-            
-        karma = db.get_karma(chat_id, target_user['user_id'])
-        update.message.reply_text(
-            f"@{escape_markdown_v2(target_username)}'s karma: {karma} ⭐",
-            parse_mode=ParseMode.MARKDOWN_V2
-        )
-    else:
-        karma = db.get_karma(chat_id, user.id)
-        update.message.reply_text(
-            f"Your karma: {karma} ⭐\n"
-            f"Keep it up, soldier\\!",
-            parse_mode=ParseMode.MARKDOWN_V2
-        )
+# if len(parts) > 1:
+# target_mention_or_id = parts[1]
+# if len(parts) > 2:
+# reason = parts[2]
 
-# --- Warning System Commands ---
-@admin_required
-def warn_user(update: Update, context: CallbackContext) -> None:
-    chat_id = update.effective_chat.id
-    
-    if not context.args or len(context.args) < 1:
-        update.message.reply_text("Who needs a warning? Use `/warn @username [reason]`")
-        return
-        
-    target_username = context.args[0].lstrip('@')
-    reason = " ".join(context.args[1:]) if len(context.args) > 1 else "violating chat rules"
-    
-    users = db.get_chat_users(chat_id)
-    target_user = next((user for user in users if user['username'] == target_username), None)
-    
-    if not target_user:
-        update.message.reply_text("Can't find that troublemaker in the database.")
-        return
-        
-    admin_id = update.effective_user.id
-    db.add_warning(chat_id, target_user['user_id'], reason, admin_id)
-    
-    warnings = len(db.get_warnings(chat_id, target_user['user_id']))
-    warning_msg = (
-        f"⚠️ *WARNING ISSUED* ⚠️\n\n"
-        f"User: @{escape_markdown_v2(target_username)}\n"
-        f"Reason: {escape_markdown_v2(reason)}\n"
-        f"Total Active Warnings: {warnings}"
-    )
-    
-    # If user has too many warnings, take action
-    if warnings >= 3:
-        warning_msg += "\n\n*⚠️ STRIKE THREE ⚠️*\nInitiating temporary mute..."
-        try:
-            # Mute for 24 hours
-            until_date = datetime.now() + timedelta(hours=24)
-            context.bot.restrict_chat_member(
-                chat_id, target_user['user_id'],
-                permissions=ChatPermissions(can_send_messages=False),
-                until_date=until_date
-            )
-            db.add_mute(chat_id, target_user['user_id'], until_date, "Exceeded warning limit", admin_id)
-            warning_msg += "\nMuted for 24 hours."
-        except Exception as e:
-            warning_msg += f"\nFailed to mute: {escape_markdown_v2(str(e))}"
-    
-    update.message.reply_text(warning_msg, parse_mode=ParseMode.MARKDOWN_V2)
+# if not target_mention_or_id:
+# await message.reply_text(f"Please specify a user to {command_name[1:]}.")
+# return None, None, None
 
-@admin_required
-def remove_warning(update: Update, context: CallbackContext) -> None:
-    chat_id = update.effective_chat.id
-    
-    if not context.args or len(context.args) < 1:
-        update.message.reply_text("Whose warning should I remove? Use `/unwarn @username`")
-        return
-        
-    target_username = context.args[0].lstrip('@')
-    users = db.get_chat_users(chat_id)
-    target_user = next((user for user in users if user['username'] == target_username), None)
-    
-    if not target_user:
-        update.message.reply_text("Can't find that user. Lucky them?")
-        return
-        
-    warnings = db.get_warnings(chat_id, target_user['user_id'])
-    if not warnings:
-        update.message.reply_text("This user has no active warnings. They're clean... for now.")
-        return
-        
-    # Mark the latest warning as expired by setting expiry to now
-    warning = warnings[-1]  # Get most recent warning
-    warning_id = warning.get('_id')
-    if warning_id:
-        db.warnings.update_one(
-            {"_id": warning_id},
-            {"$set": {"expiry": datetime.now()}})
-    
-    remaining = len(db.get_warnings(chat_id, target_user['user_id']))
-    update.message.reply_text(
-        f"Removed one warning from @{escape_markdown_v2(target_username)}\\.\n"
-        f"Remaining active warnings: {remaining}",
-        parse_mode=ParseMode.MARKDOWN_V2
-    )
+# target_user_id = None
+# target_username = None
 
-@check_rate_limit
-def check_warnings(update: Update, context: CallbackContext) -> None:
-    chat_id = update.effective_chat.id
-    user = update.effective_user
-    
-    if context.args and context.args[0].startswith('@'):
-        target_username = context.args[0].lstrip('@')
-        users = db.get_chat_users(chat_id)
-        target_user = next((user for user in users if user['username'] == target_username), None)
-        
-        if not target_user:
-            update.message.reply_text("That user doesn't exist in my database.")
-            return
-            
-        user_id = target_user['user_id']
-    else:
-        user_id = user.id
-        target_username = user.username or f"Grunt_{user.id}"
-    
-    warnings = db.get_warnings(chat_id, user_id)
-    if not warnings:
-        update.message.reply_text(
-            f"@{escape_markdown_v2(target_username)} has a clean record\\. For now\\.",
-            parse_mode=ParseMode.MARKDOWN_V2
-        )
-        return
-        
-    warning_list = []
-    for i, warn in enumerate(warnings, 1):
-        admin = context.bot.get_chat_member(chat_id, warn['admin_id']).user
-        admin_name = escape_markdown_v2(admin.username or f"Admin_{admin.id}")
-        warning_list.append(
-            f"{i}\\. By @{admin_name}: {escape_markdown_v2(warn['reason'])}"
-        )
-    
-    update.message.reply_text(
-        f"*Active warnings for @{escape_markdown_v2(target_username)}:*\n\n" +
-        "\n".join(warning_list),
-        parse_mode=ParseMode.MARKDOWN_V2
-    )
+# # Check if it's a direct user ID
+# if target_mention_or_id.isdigit():
+# target_user_id = int(target_mention_or_id)
+# else:
+# # Check if it's a mention
+# entities = message.entities or []
+# for entity in entities:
+# if entity.type == MessageEntityType.MENTION:
+# # Extract username mentioned (e.g., @username)
+# mentioned_username = message.text[entity.offset : entity.offset + entity.length]
+# if mentioned_username == target_mention_or_id: # Ensure it's the one we're looking for
+# if entity.user:
+# target_user_id = entity.user.id
+# target_username = entity.user.username
+# break
+# else: # It's a reply, target is the replied-to user
+# if message.reply_to_message and message.reply_to_message.from_user:
+# target_user_id = message.reply_to_message.from_user.id
+# target_username = message.reply_to_message.from_user.username
+# # The "reason" would be target_mention_or_id if it wasn't a user ID or mention
+# if not reason and not target_mention_or_id.isdigit() and not target_mention_or_id.startswith('@'):
+# reason = target_mention_or_id
 
-# --- Public Commands ---
-@check_rate_limit
-def nukem_quote(update: Update, context: CallbackContext) -> None:
-    """Get a random Duke Nukem quote."""
-    update.message.reply_text(random.choice(NUKEM_QUOTES))
+# if not target_user_id and message.reply_to_message and message.reply_to_message.from_user:
+# logger.debug("Targeting user from reply_to_message")
+# target_user_id = message.reply_to_message.from_user.id
+# target_username = message.reply_to_message.from_user.username
+# # If target_mention_or_id was not a user and no reason was split, it's the reason
+# if not reason and target_mention_or_id and not target_mention_or_id.isdigit() and not (target_mention_or_id.startswith('@') and any(entity.type == MessageEntityType.MENTION and message.text[entity.offset : entity.offset + entity.length] == target_mention_or_id for entity in entities)):
+# reason = target_mention_or_id
+# elif not reason and len(parts) > 1 and not (parts[1].isdigit() or (parts[1].startswith('@') and any(entity.type == MessageEntityType.MENTION and message.text[entity.offset : entity.offset + entity.length] == parts[1] for entity in entities))):
+# reason = parts[1]
 
-@check_rate_limit
-def rate_my_play(update: Update, context: CallbackContext) -> None:
-    """Rate someone's play or action."""
-    if not context.args:
-        update.message.reply_text("What am I rating here? Use `/rate_my_play <your epic description>`")
-        return
-        
-    play_description = " ".join(context.args)
-    rating = random.choice(NUKEM_RATINGS)
-    update.message.reply_text(
-        f"*Rating your play:* _{escape_markdown_v2(play_description)}_\n\n{escape_markdown_v2(rating)}",
-        parse_mode=ParseMode.MARKDOWN_V2
-    )
 
-@check_rate_limit
-@command_cooldown("alien_scan")
-def alien_scan(update: Update, context: CallbackContext) -> None:
-    """Scan for alien activity."""
-    update.message.reply_text(random.choice(ALIEN_SCAN_REPORTS))
+# if not target_user_id:
+# # If still no ID, try to find user by username (if it was provided as text without @)
+# if target_mention_or_id and not target_mention_or_id.startswith("@") and not target_mention_or_id.isdigit():
+# # This part is tricky as we don't have a direct way to search user by username text
+# # without iterating through known users or making an API call if available.
+# # For now, we'll assume if it's not an ID or a mention, it's an error or part of the reason.
+# # However, if it was the only argument after command, it might be an attempt to specify user by name.
+# # This logic might need refinement based on how users are typically specified.
+# pass # Cannot resolve username text to ID easily here.
 
-def schedule_backups(context: CallbackContext) -> None:
-    """Scheduled backup task."""
-    try:
-        # MongoDB provides automatic persistence
-        # Here we could implement additional backup logic if needed
-        logger.info("Scheduled backup check completed")
-    except Exception as e:
-        logger.error(f"Failed to perform scheduled backup: {e}")
+# if not target_user_id:
+# await message.reply_text(f"Could not identify the target user. Please mention them, use their ID, or reply to their message.")
+# return None, None, None
 
-# --- Error Handling ---
-def handle_telegram_error(update: Update, context: CallbackContext) -> None:
-    """Handle Telegram API errors."""
-    logger.error(f"Update {update} caused error: {context.error}")
-    
-    error_msg = "Mission failed! We'll get 'em next time."
-    if isinstance(context.error, Unauthorized):
-        error_msg = "I've been kicked out or blocked. Can't continue mission."
-    elif isinstance(context.error, BadRequest):
-        error_msg = "Bad request. Someone's not playing by the rules."
-    elif isinstance(context.error, TimedOut):
-        error_msg = "Connection timed out. Servers must be running on potato power."
-    elif isinstance(context.error, NetworkError):
-        error_msg = "Network error. The aliens must be jamming our signal."
-    
-    if update and update.effective_message:
-        update.effective_message.reply_text(
-            escape_markdown_v2(error_msg),
-            parse_mode=ParseMode.MARKDOWN_V2
-        )
+# logger.debug(f"Target User ID: {target_user_id}, Username: {target_username}, Reason: {reason}")
+# return target_user_id, reason, target_username
 
-# --- User Tracking ---
-def chat_member_update_handler(update: Update, context: CallbackContext) -> None:
-    """Tracks users joining or leaving based on ChatMember updates."""
-    result = update.chat_member
-    if not result: return
 
-    chat_id = result.chat.id
-    user = result.new_chat_member.user
-    status = result.new_chat_member.status
+# async def get_karma_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+# """Gets the karma of a user or the user who sent the command."""
+# logger.debug("Entering get_karma_command")
+# message = update.effective_message
+# chat_id = update.effective_chat.id
+# user_to_check_id = None
+# user_to_check_username = None
 
-    if user.is_bot: return
-    
-    username_display = user.username if user.username else f"Grunt_{user.id}"
+# if message.reply_to_message and message.reply_to_message.from_user:
+# user_to_check_id = message.reply_to_message.from_user.id
+# user_to_check_username = message.reply_to_message.from_user.username or f"User {user_to_check_id}"
+# elif context.args:
+# target_arg = context.args[0]
+# if target_arg.isdigit():
+# user_to_check_id = int(target_arg)
+# # Attempt to get username if ID is known (e.g., from a previous interaction or DB)
+# # This might require fetching user details if not readily available
+# # For simplicity, we'll just show ID if username isn't easily found
+# user_details = await get_user_details_for_karma(user_to_check_id, chat_id) # Placeholder
+# if user_details:
+# user_to_check_username = user_details.get('username', f"User {user_to_check_id}")
+# else:
+# user_to_check_username = f"User {user_to_check_id}"
+# elif target_arg.startswith('@'):
+# mentioned_username_to_check = target_arg[1:]
+# # Find user ID from mention (requires iterating through message entities or a helper)
+# # This is a simplified approach; robust parsing is in _get_target_user_id_and_reason
+# entities = message.entities or []
+# found_in_entities = False
+# for entity in entities:
+# if entity.type == MessageEntityType.MENTION:
+# username_in_entity = message.text[entity.offset+1 : entity.offset + entity.length]
+# if username_in_entity == mentioned_username_to_check and entity.user:
+# user_to_check_id = entity.user.id
+# user_to_check_username = entity.user.username or f"User {user_to_check_id}"
+# found_in_entities = True
+# break
+# if not found_in_entities:
+# await message.reply_text(f"Could not find user {target_arg}. Please use their ID or mention them directly.")
+# return
+# else:
+# await message.reply_text(f"Invalid argument. Use /karma @username, /karma user_id, or reply to a message.")
+# return
+# else:
+# user_to_check_id = message.from_user.id
+# user_to_check_username = message.from_user.username or f"User {user_to_check_id}"
 
-    if status in [ChatMember.MEMBER, ChatMember.ADMINISTRATOR, ChatMember.CREATOR]:
-        db.add_or_update_user(chat_id, user.id, username_display, status)
-        logger.info(f"User @{username_display} (ID: {user.id}) joined/updated in chat {chat_id}")
-        
-        # Send welcome message for new members
-        welcome_msg = db.get_welcome_message(chat_id)
-        if welcome_msg:
-            context.bot.send_message(
-                chat_id,
-                welcome_msg.format(
-                    username=username_display,
-                    chat_name=update.effective_chat.title or "this chat"
-                ),
-                parse_mode=ParseMode.MARKDOWN_V2
-            )
-            
-    elif status in [ChatMember.LEFT, ChatMember.KICKED]:
-        db.remove_user(chat_id, user.id)
-        logger.info(f"User @{username_display} (ID: {user.id}) left/kicked from chat {chat_id}")
+# if user_to_check_id is None:
+# await message.reply_text("Could not determine user to check karma for.")
+# return
 
-# --- Main Function ---
-def main() -> None:
-    """Main bot function with improved initialization and shutdown handling."""
-    if not validate_config():
-        logger.error("!!! Configuration validation failed. Check your .env file and admin IDs !!!")
-        return
-
-    try:
-        logger.info("Initializing Based NUKEM Bot...")
-        updater = Updater(BOT_TOKEN)
-        dispatcher = updater.dispatcher
-
-        # Set up periodic backups
-        job_queue = updater.job_queue
-        job_queue.run_repeating(schedule_backups, interval=BACKUP_INTERVAL, first=BACKUP_INTERVAL)
-        
-        # Admin Commands
-        dispatcher.add_handler(CommandHandler("start", start))
-        dispatcher.add_handler(CommandHandler("help_nukem", help_nukem))
-        dispatcher.add_handler(CommandHandler("mentionall", mention_all))
-        dispatcher.add_handler(CommandHandler("mention", mention_specific))
-        dispatcher.add_handler(CommandHandler("pin_nukem", pin_nukem))
-        dispatcher.add_handler(CommandHandler("list_users", list_users))
-        dispatcher.add_handler(CommandHandler("sync_users", sync_users))
-        dispatcher.add_handler(CommandHandler("stats", show_stats))
-        
-        # User Management Commands
-        dispatcher.add_handler(CommandHandler("karma", check_karma))
-        dispatcher.add_handler(CommandHandler("give_karma", give_karma))
-        dispatcher.add_handler(CommandHandler("remove_karma", remove_karma))
-        dispatcher.add_handler(CommandHandler("warn", warn_user))
-        dispatcher.add_handler(CommandHandler("unwarn", remove_warning))
-        dispatcher.add_handler(CommandHandler("warnings", check_warnings))
-
-        # Public Commands
-        dispatcher.add_handler(CommandHandler("info", info))
-        dispatcher.add_handler(CommandHandler("nukem_quote", nukem_quote))
-        dispatcher.add_handler(CommandHandler("rate_my_play", rate_my_play))
-        dispatcher.add_handler(CommandHandler("alien_scan", alien_scan))
-        
-        # Message and Member Handlers
-        dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, message_tracker))
-        dispatcher.add_handler(ChatMemberHandler(chat_member_update_handler, ChatMemberHandler.MY_CHAT_MEMBER | ChatMemberHandler.CHAT_MEMBER))
-
-        # Error handler
-        dispatcher.add_error_handler(handle_telegram_error)
-        
-        # Start the bot
-        logger.info("Based NUKEM Bot locked, loaded, and starting polling... Time to paint the town red.")
-        updater.start_polling()
-        
-        # Run the bot until Ctrl-C is pressed or the bot receives SIGTERM/SIGINT
-        updater.idle()
-        
-    except Exception as e:
-        logger.error(f"Critical failure starting NUKEM Bot: {e}")
-        raise
-    finally:
-        logger.info("Based NUKEM signing off. I need a drink... and a bigger gun.")
-        db.close()
-
-if __name__ == '__main__':
-    main()
+# karma_points = get_karma(user_to_check_id, chat_id)
+# if karma_points is not None:
+# await message.reply_text(f"{KARMA_EMOJI} {user_to_check_username} has {karma_points} karma points.")
+# else:
+# await message.reply_text(f"Could not retrieve karma for {user_to_check_username}.")
