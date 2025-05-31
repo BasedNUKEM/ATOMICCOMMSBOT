@@ -278,13 +278,23 @@ async def mention_all(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
             message_to_send = current_header + mention_text
             
-            # Ensure the message (header + mentions) doesn\'t exceed limits.
-            # This is a simplified check; precise calculation is harder due to UTF-8.
-            if len(message_to_send) > 4000: # Leave some buffer
-                 # This part needs more robust chunking of the message_to_send itself if it\'s too long
-                await safe_markdown_message(update, f"{EMOJI_ERROR} Message part {i+1} is too long to send with all mentions\\. Try a shorter message or fewer people\\.", logger, parse_mode=ParseMode.MARKDOWN_V2)
+            # Ensure the message (header + mentions) doesn't exceed limits using byte length.
+            message_bytes = len(message_to_send.encode('utf-8'))
+            # Telegram's official limit is 4096 bytes. Using 4050 as a safe threshold.
+            if message_bytes > 4050:
+                logger.warning(
+                    f"Constructed message part {i+1} for mention_all in chat {chat_id} is too long ({message_bytes} bytes) "
+                    f"for {len(chunk)} mentions. Skipping this chunk of users."
+                )
+                await safe_markdown_message(
+                    update,
+                    f"{EMOJI_ERROR} Message part {i+1} of the broadcast is too long ({message_bytes} bytes) to send with its current set of {len(chunk)} mentions\\. "
+                    f"This specific group of users was not tagged in this part\\. "
+                    f"You might need to use a shorter custom message if this persists.",
+                    logger,
+                    parse_mode=ParseMode.MARKDOWN_V2
+                )
                 continue
-
 
             try:
                 await safe_markdown_message(update, message_to_send, logger, parse_mode=ParseMode.MARKDOWN_V2, disable_notification=False)
@@ -379,7 +389,6 @@ async def mention_specific(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                     continue # Skip to next arg if user not found in DB
             else: # DB not available, can\'t resolve @username to ID reliably for tg://user link
                   # We can try to use the @username directly in the message, but it won\'t be a "silent" mention.
-                  # For now, let\'s treat as not found if DB is down and it\'s a username.
                 not_found_users.append(f"{target_arg} \\(DB unavailable for lookup\\)")
                 continue
         elif target_arg.isdigit():
@@ -800,9 +809,6 @@ async def sync_users(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     for i, chunk_val in enumerate(message_chunks): # Renamed chunk to chunk_val
         # No separate header per chunk for sync report, it\'s usually short.
         # If it can be long, add similar header logic as list_users.
-        # For now, assume it\'s one message.
-        # header = f"{EMOJI_PAGER} *Sync Report Part {i+1}/{len(message_chunks)}*\\n" if len(message_chunks) > 1 else ""
-        # await safe_markdown_message(update, header + chunk_val, logger, parse_mode=ParseMode.MARKDOWN_V2)
         await safe_markdown_message(update, chunk_val, logger, parse_mode=ParseMode.MARKDOWN_V2)
 
 
@@ -1628,13 +1634,13 @@ async def chat_member_update_handler(update: Update, context: ContextTypes.DEFAU
             if user.id not in admin_list:
                 admin_list.append(user.id)
                 context.chat_data['chat_admins'] = admin_list
-            logger.info(f"User {user.id} promoted to admin in chat {chat.id}. Updated cache.")
+            logger.info(f"User {user.id} promoted to admin in chat {chat_id}. Updated cache.")
         elif old_status == ChatMember.ADMINISTRATOR and new_status != ChatMember.ADMINISTRATOR:
             admin_list = context.chat_data.get('chat_admins', [])
             if user.id in admin_list:
                 admin_list.remove(user.id)
                 context.chat_data['chat_admins'] = admin_list
-            logger.info(f"User {user.id} no longer admin in chat {chat.id}. Updated cache.")
+            logger.info(f"User {user.id} no longer admin in chat {chat_id}. Updated cache.")
 
         # Send welcome/goodbye messages (optional, can be spammy)
         # if new_status == ChatMember.MEMBER and old_status == ChatMember.LEFT:

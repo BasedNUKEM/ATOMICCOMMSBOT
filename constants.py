@@ -61,6 +61,8 @@ EMOJI_CROSS_MARK = "❌"
 EMOJI_HOURGLASS = "⏳"  # Added EMOJI_HOURGLASS (Note: EMOJI_WAIT also uses "⏳")
 EMOJI_PAGER = "📟"  # Added EMOJI_PAGER
 EMOJI_INBOX = "📥"  # Added EMOJI_INBOX
+EMOJI_OUTBOX = "📤"  # Added EMOJI_OUTBOX
+EMOJI_PACKAGE = "📦"  # Added EMOJI_PACKAGE
 
 # Admin User IDs - Loaded from environment variable
 RAW_ADMIN_USER_IDS = os.getenv("NUKEM_ADMIN_USER_IDS", "") # Changed "ADMIN_USER_IDS" to "NUKEM_ADMIN_USER_IDS"
