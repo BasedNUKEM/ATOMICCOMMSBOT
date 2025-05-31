@@ -31,40 +31,42 @@ EMOJI_ADMIN = "👑"
 EMOJI_USER = "👤"
 EMOJI_CHAT = "💬"
 EMOJI_STAR = "⭐"
-EMOJI_CHART_UP = "📈"
-EMOJI_CHART_DOWN = "📉"
-EMOJI_LEADERBOARD = "🏆"
-EMOJI_BOOK = "📖"
-EMOJI_GEAR = "⚙️"
-EMOJI_DATABASE = "💾"
-EMOJI_BROADCAST = "📢"
-EMOJI_LINK = "🔗"
+KARMA_EMOJI = EMOJI_STAR
+EMOJI_PIN = "📌"
+EMOJI_COMMAND = "⚙️"
+EMOJI_CYCLE = "🔄"
+EMOJI_CHECKMARK = "✅"
 EMOJI_SUNGLASSES = "😎"
-EMOJI_WAVE = "👋"
-EMOJI_THINKING = "🤔"
-EMOJI_LIGHTBULB = "💡"
 EMOJI_PARTY = "🎉"
-EMOJI_STOPWATCH = "⏱️"
+EMOJI_THINKING = "🤔"
 EMOJI_EYES = "👀"
-EMOJI_BRAIN = "🧠"
-EMOJI_SCROLL = "📜"
+EMOJI_CHART_DOWN = "📉"
+EMOJI_YELLOW_CIRCLE = "🟡"
 EMOJI_GREEN_CIRCLE = "🟢"
 EMOJI_RED_CIRCLE = "🔴"
-EMOJI_YELLOW_CIRCLE = "🟡"
+EMOJI_BRAIN = "🧠"
 EMOJI_TOOLS = "🛠️"
-EMOJI_PIN = "📌"  # Define EMOJI_PIN
-KARMA_EMOJI = EMOJI_STAR  # Define KARMA_EMOJI using the existing EMOJI_STAR
+EMOJI_LINK = "🔗"
+EMOJI_BOOK = "📖"
+EMOJI_CHART_UP = "📈"
+EMOJI_GEAR = "⚙️"  # Note: EMOJI_COMMAND also uses "⚙️", this is fine.
+EMOJI_STOPWATCH = "⏱️"
+EMOJI_LEADERBOARD = "🏆"
+EMOJI_DATABASE = "💾"
+EMOJI_BROADCAST = "📢"
+EMOJI_WAVE = "👋"
+EMOJI_LIGHTBULB = "💡"  # Added EMOJI_LIGHTBULB
 
 # Admin User IDs - Loaded from environment variable
-RAW_ADMIN_USER_IDS = os.getenv("ADMIN_USER_IDS", "")
+RAW_ADMIN_USER_IDS = os.getenv("NUKEM_ADMIN_USER_IDS", "") # Changed "ADMIN_USER_IDS" to "NUKEM_ADMIN_USER_IDS"
 if not RAW_ADMIN_USER_IDS:
-    print(f"{EMOJI_WARNING} WARNING: ADMIN_USER_IDS environment variable not set. Admin commands will not be restricted.")
+    print(f"{EMOJI_WARNING} WARNING: NUKEM_ADMIN_USER_IDS environment variable not set. Admin commands will not be restricted.")
     ADMIN_USER_IDS = set()
 else:
     try:
         ADMIN_USER_IDS = {int(admin_id.strip()) for admin_id in RAW_ADMIN_USER_IDS.split(',') if admin_id.strip()}
     except ValueError:
-        print(f"{EMOJI_ERROR} ERROR: ADMIN_USER_IDS environment variable contains non-integer values. Please check your .env file.")
+        print(f"{EMOJI_ERROR} ERROR: NUKEM_ADMIN_USER_IDS environment variable contains non-integer values. Please check your .env file.")
         ADMIN_USER_IDS = set()
 
 # Bot Behavior Constants
