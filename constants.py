@@ -52,6 +52,8 @@ EMOJI_GREEN_CIRCLE = "🟢"
 EMOJI_RED_CIRCLE = "🔴"
 EMOJI_YELLOW_CIRCLE = "🟡"
 EMOJI_TOOLS = "🛠️"
+EMOJI_PIN = "📌"  # Define EMOJI_PIN
+KARMA_EMOJI = EMOJI_STAR  # Define KARMA_EMOJI using the existing EMOJI_STAR
 
 # Admin User IDs - Loaded from environment variable
 RAW_ADMIN_USER_IDS = os.getenv("ADMIN_USER_IDS", "")

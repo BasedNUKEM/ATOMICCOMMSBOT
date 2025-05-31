@@ -7,7 +7,7 @@ import re
 from functools import wraps
 from typing import Callable, Coroutine, Any, cast
 from datetime import timedelta
-from telegram import Update, ChatMember, ChatPermissions, MessageEntityType
+from telegram import Update, ChatMember, ChatPermissions, MessageEntity # Changed MessageEntityType to MessageEntity
 from telegram.ext import ContextTypes, ConversationHandler
 from telegram.constants import ParseMode # Ensure ParseMode is imported
 from telegram.error import BadRequest, Forbidden, NetworkError, TelegramError
