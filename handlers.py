@@ -83,6 +83,36 @@ except Exception as e: # Catch other potential errors during import or validatio
 
 logger = logging.getLogger(__name__)
 
+# Placeholder for AdminCache class
+class AdminCache:
+    def __init__(self):
+        self.admins = {}
+
+    def add_admin(self, chat_id: int, user_id: int):
+        if chat_id not in self.admins:
+            self.admins[chat_id] = set()
+        self.admins[chat_id].add(user_id)
+        logger.info(f"Admin {user_id} added to cache for chat {chat_id}")
+
+    def remove_admin(self, chat_id: int, user_id: int):
+        if chat_id in self.admins and user_id in self.admins[chat_id]:
+            self.admins[chat_id].remove(user_id)
+            logger.info(f"Admin {user_id} removed from cache for chat {chat_id}")
+
+    def is_admin(self, chat_id: int, user_id: int) -> bool:
+        is_admin_status = chat_id in self.admins and user_id in self.admins[chat_id]
+        logger.debug(f"Checking admin status for user {user_id} in chat {chat_id}: {is_admin_status}")
+        return is_admin_status
+
+# Initialize a global admin cache instance
+ADMIN_CACHE = AdminCache()
+
+# Placeholder for _update_stats function
+def _update_stats(event_type: str, user_id: int, chat_id: int, **kwargs) -> None:
+    logger.info(f"Stats update: {event_type} for user {user_id} in chat {chat_id} with details: {kwargs}")
+    # In a real implementation, this would write to a database or metrics system.
+    pass
+
 # Conversation states for multi-step interactions (if any)
 # EXAMPLE_STATE = 1
 
@@ -610,11 +640,10 @@ async def arsenal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 # --- User Management & Karma ---
 @chat_type_allowed(['group', 'supergroup'])
-@command_cooldown("list_users",_bypass_admin=True) # Allow non-admins to use, but might show limited info
-@admin_required(fetch_chat_admins=True) # Decorator now fetches admins if not already in context
-@error_handler
+@command_cooldown("list_users") 
+@admin_required # Removed fetch_chat_admins=True
 async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Lists users in the chat with karma and warnings.""" # Simplified docstring
+    """Lists all users in the database (admin only or limited view)."""
     db = await _get_db_instance(context)
     _update_stats = context.bot_data.get('update_stats')
     chat_id = update.effective_chat.id
@@ -696,7 +725,7 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 @chat_type_allowed(['group', 'supergroup'])
 @command_cooldown("sync_users", 300) # 5 min cooldown
-@admin_required(fetch_chat_admins=True)
+@admin_required # Removed fetch_chat_admins=True
 @error_handler
 async def sync_users(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Synchronizes chat administrators with the database.""" # Simplified docstring
@@ -1093,7 +1122,7 @@ async def warn_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if callable(_update_stats): _update_stats(command="warn", error_occurred=f"db_error: {str(e)}", target_user_id=target_user_id, admin_user_id=admin_user_id)
     except Exception as e:
         logger.error(f"Unexpected error warning user {target_user_id}: {e}")
-        await safe_markdown_message(update, f"{EMOJI_SKULL} Something blew up trying to warn users\\. The tech grunts are on it \\(maybe\\)\\.", logger, reply_to=True, parse_mode=ParseMode.MARKDOWN_V2)
+        await safe_markdown_message(update, f"{EMOJI_SKULL} Something blew up trying to warn users\\\\. The tech grunts are on it \\\\(maybe\\\\)\\\\.", logger, reply_to=True, parse_mode=ParseMode.MARKDOWN_V2)
         if callable(_update_stats): _update_stats(command="warn", error_occurred=f"unexpected: {str(e)}", target_user_id=target_user_id, admin_user_id=admin_user_id)
 
 
@@ -1583,76 +1612,67 @@ async def message_tracker(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def chat_member_update_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles chat member updates (joins, leaves, promotions, etc.)."""
     if not update.chat_member:
+        logger.warning("chat_member_update_handler called without update.chat_member")
         return
 
-    db = await _get_db_instance(context)
-    _update_stats = context.bot_data.get('update_stats')
+    chat = update.effective_chat # Define chat object
+    if not chat:
+        logger.warning("chat_member_update_handler: update.effective_chat is None")
+        return
     
-    chat = update.chat_member.chat
+    chat_id = chat.id # Use chat_id consistently
+
     user = update.chat_member.new_chat_member.user
     old_status = update.chat_member.old_chat_member.status
     new_status = update.chat_member.new_chat_member.status
 
-    logger.info(f"Chat member update in chat {chat.id} ('{chat.title}') for user {user.id} ('{user.username or user.first_name}'): {old_status} -> {new_status}")
+    logger.info(f"Chat member update in chat {chat_id} ('{chat.title}') for user {user.id} ('{user.username or user.first_name}'): {old_status} -> {new_status}")
 
-    if db is None:
-        logger.warning("DB not available in chat_member_update_handler.")
-        # Potentially log this event to stats even if DB is down
-        if callable(_update_stats):
-            _update_stats(event_type="chat_member_update", user_id=user.id, chat_id=chat.id, old_status=old_status, new_status=new_status, db_status="unavailable")
-        return
+    # Update admin cache if status changed to/from admin/creator
+    if (old_status not in [ChatMember.ADMINISTRATOR, ChatMember.OWNER] and
+            new_status in [ChatMember.ADMINISTRATOR, ChatMember.OWNER]):
+        ADMIN_CACHE.add_admin(chat_id, user.id)
+        logger.info(f"User {user.id} promoted to admin in chat {chat_id}. Updated cache.")
+    elif (old_status in [ChatMember.ADMINISTRATOR, ChatMember.OWNER] and
+          new_status not in [ChatMember.ADMINISTRATOR, ChatMember.OWNER]):
+        ADMIN_CACHE.remove_admin(chat_id, user.id)
+        logger.info(f"User {user.id} no longer admin in chat {chat_id}. Updated cache.")
 
     try:
-        user_data_to_update = {
-            'username': user.username,
-            'first_name': user.first_name,
-            'last_name': user.last_name,
-            'last_seen': datetime.datetime.now(datetime.timezone.utc)
+        db = context.bot_data.get('db')
+        if not db:
+            logger.error("Database not initialized in bot_data for chat_member_update_handler")
+            _update_stats(event_type="chat_member_update", user_id=user.id, chat_id=chat_id, old_status=old_status, new_status=new_status, db_status="unavailable")
+            return
+
+        user_data = await db.get_user(user.id)
+        full_new_user_data = {
+            "username": user.username,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "is_bot": user.is_bot,
+            "status": new_status, # Store current member status
+            "last_seen": datetime.utcnow(),
+            "join_date": user_data.get("join_date") if user_data else datetime.utcnow(), # Keep original join date
+            "karma": user_data.get("karma", 0),
+            "warnings": user_data.get("warnings", 0),
+            "notes": user_data.get("notes", "")
         }
-        is_admin_now = new_status in [ChatMember.ADMINISTRATOR, ChatMember.OWNER]
-        
-        user_doc = await db.get_user(user.id)
-        if user_doc:
-            user_data_to_update['is_chat_admin'] = is_admin_now # Update admin status
-            # Potentially update 'is_member_of_chat_X': True/False if you track that explicitly
-            await db.update_user(user.id, user_data_to_update)
+        if user_data:
+            await db.update_user(user.id, chat_id, full_new_user_data)
         else:
-            # User not in DB, add them if they are now a member or admin
-            if new_status not in [ChatMember.LEFT, ChatMember.KICKED]:
-                initial_data = {
-                    'karma': 0, 
-                    'warnings': [], 
-                    'is_chat_admin': is_admin_now,
-                    'join_date': datetime.datetime.now(datetime.timezone.utc) # approx join date
-                }
-                full_new_user_data = {**user_data_to_update, **initial_data}
-                await db.add_user(user.id, chat.id, full_new_user_data)
+            # If user is new or rejoining after data was cleared
+            full_new_user_data["join_date"] = datetime.utcnow()
+            await db.add_user(user.id, chat_id, full_new_user_data)
 
-        # Update chat_admins cache in context.chat_data if an admin status changed
-        if old_status != ChatMember.ADMINISTRATOR and new_status == ChatMember.ADMINISTRATOR:
-            admin_list = context.chat_data.get('chat_admins', [])
-            if user.id not in admin_list:
-                admin_list.append(user.id)
-                context.chat_data['chat_admins'] = admin_list
-            logger.info(f"User {user.id} promoted to admin in chat {chat_id}. Updated cache.")
-        elif old_status == ChatMember.ADMINISTRATOR and new_status != ChatMember.ADMINISTRATOR:
-            admin_list = context.chat_data.get('chat_admins', [])
-            if user.id in admin_list:
-                admin_list.remove(user.id)
-                context.chat_data['chat_admins'] = admin_list
-            logger.info(f"User {user.id} no longer admin in chat {chat_id}. Updated cache.")
+        _update_stats(event_type="chat_member_update", user_id=user.id, chat_id=chat_id, old_status=old_status, new_status=new_status, db_status="updated")
 
-        # Send welcome/goodbye messages (optional, can be spammy)
-        # if new_status == ChatMember.MEMBER and old_status == ChatMember.LEFT:
-        #     await safe_markdown_message(update, f"Welcome {user.mention_markdown_v2()} to the shitshow!", logger, chat_id_override=chat.id)
-        
-        if callable(_update_stats):
-            _update_stats(event_type="chat_member_update", user_id=user.id, chat_id=chat.id, old_status=old_status, new_status=new_status, db_status="updated")
-
-    except DatabaseError as e: # type: ignore
-        logger.error(f"DB error in chat_member_update_handler for user {user.id}, chat {chat.id}: {e}")
+    except DatabaseError as e:
+        logger.error(f"DB error in chat_member_update_handler for user {user.id}, chat {chat_id}: {e}")
+        _update_stats(event_type="chat_member_update", user_id=user.id, chat_id=chat_id, old_status=old_status, new_status=new_status, db_status="error")
     except Exception as e:
-        logger.error(f"Unexpected error in chat_member_update_handler for user {user.id}, chat {chat.id}: {e}")
+        logger.error(f"Unexpected error in chat_member_update_handler for user {user.id}, chat {chat_id}: {e}", exc_info=True)
+        _update_stats(event_type="chat_member_update", user_id=user.id, chat_id=chat_id, old_status=old_status, new_status=new_status, db_status="exception")
 
 
 # --- Error Handler for Bot ---

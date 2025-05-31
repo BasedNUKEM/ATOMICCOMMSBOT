@@ -119,8 +119,8 @@ def check_rate_limit(func: Callable[..., Coroutine[Any, Any, Any]]):
 # --- Cooldown Management ---
 LAST_COMMAND_USAGE = defaultdict(lambda: defaultdict(float)) # User-specific cooldowns
 
-def command_cooldown(command_name: str): # Removed unused parameters
-    """Decorator to add cooldown to commands. Uses COMMAND_COOLDOWNS and ADMIN_USER_IDS from constants."""
+def command_cooldown(command_name: str, default_cooldown_seconds: Optional[int] = None):
+    """Decorator factory to add cooldown to commands. Uses COMMAND_COOLDOWNS and ADMIN_USER_IDS from constants."""
     def decorator(func: Callable[..., Coroutine[Any, Any, Any]]):
         @wraps(func)
         async def wrapped(update: Update, context: ContextTypes.DEFAULT_TYPE, *args: Any, **kwargs: Any) -> Optional[Any]:
@@ -133,8 +133,8 @@ def command_cooldown(command_name: str): # Removed unused parameters
             if user_id in ADMIN_USER_IDS: # Admins bypass cooldowns
                 return await func(update, context, *args, **kwargs)
 
-            # Get cooldown from COMMAND_COOLDOWNS in constants.py
-            cooldown_seconds = COMMAND_COOLDOWNS.get(command_name, COMMAND_COOLDOWNS.get("default", 5))
+            # Get cooldown from COMMAND_COOLDOWNS in constants.py, or use the provided default_cooldown_seconds
+            cooldown_seconds = COMMAND_COOLDOWNS.get(command_name, default_cooldown_seconds if default_cooldown_seconds is not None else COMMAND_COOLDOWNS.get("default", 5))
             
             last_usage = LAST_COMMAND_USAGE[command_name].get(user_id, 0.0)
 
@@ -187,43 +187,69 @@ def error_handler(func: Callable[..., Coroutine[Any, Any, Any]]):
     return wrapped
 
 # --- Admin Check Decorator ---
-def admin_required(func: Callable[..., Coroutine[Any, Any, Any]]):
-    """Decorator to ensure only admins (global or chat) can run the command."""
-    @wraps(func)
-    async def wrapped(update: Update, context: ContextTypes.DEFAULT_TYPE, *args: Any, **kwargs: Any) -> Optional[Any]:
-        if not update.effective_user:
-            logger.warning(f"Command {func.__name__} called without effective_user.")
-            return None 
-        
-        user_id = update.effective_user.id
-        
-        if user_id in ADMIN_USER_IDS: # Global admins from constants.py
-            return await func(update, context, *args, **kwargs)
-        
-        # Check for chat admin status if in a group/supergroup
-        if update.effective_chat and update.effective_chat.type in ['group', 'supergroup']:
-            chat_id = update.effective_chat.id
-            try:
-                chat_member = await context.bot.get_chat_member(chat_id, user_id)
-                # User is a chat admin if their status is 'administrator' or 'creator' (OWNER)
-                if chat_member.status in [ChatMember.ADMINISTRATOR, ChatMember.OWNER]:
+def admin_required(_func: Optional[Callable[..., Coroutine[Any, Any, Any]]] = None, *, fetch_chat_admins: bool = False):
+    """Decorator to ensure only admins (global or chat) can run the command.
+    Can be used as @admin_required or @admin_required(fetch_chat_admins=True).
+    """
+    def decorator(func: Callable[..., Coroutine[Any, Any, Any]]):
+        @wraps(func)
+        async def wrapped(update: Update, context: ContextTypes.DEFAULT_TYPE, *args: Any, **kwargs: Any) -> Optional[Any]:
+            if not update.effective_user:
+                logger.warning(f"Command {func.__name__} called without effective_user.")
+                return None 
+            
+            user_id = update.effective_user.id
+            
+            if user_id in ADMIN_USER_IDS: # Global admins from constants.py
+                # If fetch_chat_admins is True, ensure chat_admins is populated in context.chat_data
+                if fetch_chat_admins and update.effective_chat and update.effective_chat.type in ['group', 'supergroup']:
+                    if 'chat_admins' not in context.chat_data:
+                        try:
+                            chat_administrators = await context.bot.get_chat_administrators(update.effective_chat.id)
+                            context.chat_data['chat_admins'] = [admin.user.id for admin in chat_administrators]
+                        except TelegramError as e:
+                            logger.warning(f"Could not fetch chat admins for {func.__name__}: {e}")
+                            context.chat_data['chat_admins'] = [] # Set to empty list on failure
+                return await func(update, context, *args, **kwargs)
+            
+            # Check for chat admin status if in a group/supergroup
+            if update.effective_chat and update.effective_chat.type in ['group', 'supergroup']:
+                chat_id = update.effective_chat.id
+                # Use cached chat_admins if available and fetch_chat_admins was true, or fetch fresh
+                chat_admin_ids = context.chat_data.get('chat_admins')
+                
+                if chat_admin_ids is None or not fetch_chat_admins: # If not cached or not asked to pre-fetch, get fresh
+                    try:
+                        chat_member = await context.bot.get_chat_member(chat_id, user_id)
+                        if chat_member.status in [ChatMember.ADMINISTRATOR, ChatMember.OWNER]:
+                            # If fetch_chat_admins is True, populate the cache now if it wasn\'t already
+                            if fetch_chat_admins and 'chat_admins' not in context.chat_data:
+                                chat_administrators = await context.bot.get_chat_administrators(chat_id)
+                                context.chat_data['chat_admins'] = [admin.user.id for admin in chat_administrators]
+                            return await func(update, context, *args, **kwargs)
+                    except TelegramError as e:
+                        logger.warning(f"{EMOJI_WARNING} Could not verify chat admin status for user {user_id} in chat {chat_id} due to Telegram API error: {e}")
+                    except Exception as e:
+                        logger.error(f"{EMOJI_ERROR} Unexpected error verifying chat admin status for user {user_id} in chat {chat_id}: {e}", exc_info=True)
+                elif user_id in chat_admin_ids: # User is in the pre-fetched list of admins
                     return await func(update, context, *args, **kwargs)
-            except TelegramError as e: # Catch specific Telegram errors
-                logger.warning(f"{EMOJI_WARNING} Could not verify chat admin status for user {user_id} in chat {chat_id} due to Telegram API error: {e}")
-            except Exception as e: # Catch any other unexpected errors
-                logger.error(f"{EMOJI_ERROR} Unexpected error verifying chat admin status for user {user_id} in chat {chat_id}: {e}", exc_info=True)
 
-        # If not a global admin and (not a chat admin or check failed/not applicable)
-        insults = [
-            f"{EMOJI_NO_ENTRY} Nice try, pencil-neck. This command's for the {EMOJI_ADMIN} big boys.",
-            f"{EMOJI_SHIELD} Whoa there, slick. You ain't got the clearance for that. Access denied.",
-            f"{EMOJI_TARGET} Access denied. Go cry to your mama. This is restricted airspace!",
-            f"{EMOJI_ALIEN} You? Admin? Ha! That's funnier than a pig in a prom dress. {EMOJI_SKULL}"
-        ]
-        if update.message: # Ensure there's a message to reply to
-            await safe_markdown_message(update, random.choice(insults), logger, reply_to=True)
-        return None
-    return wrapped
+            # If not a global admin and (not a chat admin or check failed/not applicable)
+            insults = [
+                f"{EMOJI_NO_ENTRY} Nice try, pencil-neck. This command's for the {EMOJI_ADMIN} big boys.",
+                f"{EMOJI_SHIELD} Whoa there, slick. You ain't got the clearance for that. Access denied.",
+                f"{EMOJI_TARGET} Access denied. Go cry to your mama. This is restricted airspace!",
+                f"{EMOJI_ALIEN} You? Admin? Ha! That's funnier than a pig in a prom dress. {EMOJI_SKULL}"
+            ]
+            if update.message: # Ensure there's a message to reply to
+                await safe_markdown_message(update, random.choice(insults), logger, reply_to=True)
+            return None
+        return wrapped
+
+    if _func is None: # Called as @admin_required(fetch_chat_admins=True)
+        return decorator
+    else: # Called as @admin_required
+        return decorator(_func)
 
 # --- Chat Type Management ---
 def chat_type_allowed(allowed_types: list[str]):
@@ -330,3 +356,33 @@ async def send_message_in_chunks(update: Update, text: str, logger_instance: log
     except Exception as e:
         logger_instance.error(f"Error in send_message_in_chunks: {e}", exc_info=True)
         await update.message.reply_text(f"Error sending message chunks: {e}")
+
+def parse_duration(duration_str: str) -> Optional[int]:
+    """
+    Parses a duration string (e.g., "1d", "2h", "30m") into seconds.
+    Placeholder implementation.
+    """
+    logger.info(f"Attempting to parse duration: {duration_str}")
+    # TODO: Implement actual duration parsing logic
+    # Examples: "1d" -> 86400, "2h" -> 7200, "30m" -> 1800
+    # For now, return None or raise an error if it's critical for startup
+    if duration_str.endswith('s'):
+        return int(duration_str[:-1])
+    elif duration_str.endswith('m'):
+        return int(duration_str[:-1]) * 60
+    elif duration_str.endswith('h'):
+        return int(duration_str[:-1]) * 3600
+    elif duration_str.endswith('d'):
+        return int(duration_str[:-1]) * 86400
+    logger.warning(f"parse_duration: Basic implementation, received {duration_str}")
+    return None # Or raise ValueError("Invalid duration string")
+
+async def get_user_id_from_username_or_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, args: list[str]) -> Optional[int]:
+    """
+    Placeholder for a function that gets user ID from username or reply.
+    """
+    logger.info(f"Attempting to get user ID from username or reply. Args: {args}")
+    # TODO: Implement actual logic to extract user ID
+    # This might involve checking update.message.reply_to_message
+    # or parsing args for a username and then looking up the user.
+    return None

@@ -105,11 +105,11 @@ async def setup_database():
         return False
 
 # --- Resource Cleanup ---
-async def cleanup():
+def cleanup():  # Changed from async def
     """Cleanup resources before shutdown."""
     global db  # pylint: disable=global-statement
     if db:
-        db.close() # This is now an async method in db.py
+        db.close() # db.close() is synchronous
         logger.info(f"{EMOJI_TOOLS} Database connections closed")
 
 # --- Configuration Validation ---
@@ -150,22 +150,11 @@ signal.signal(signal.SIGTERM, signal_handler)
 def _atexit_cleanup():
     logger.info(f"{EMOJI_WAIT} Running cleanup tasks at exit...")
     try:
-        loop = asyncio.get_running_loop()
-        if loop.is_running():
-            # Create a task for cleanup, but don't necessarily wait for it here
-            # as atexit might not play well with blocking calls.
-            # The loop should ideally process it before full exit.
-            loop.create_task(cleanup())
-            logger.info(f"{EMOJI_INFO} Asynchronous cleanup task scheduled.")
-        else:
-            # Fallback if loop is not running (e.g. already closed or never started properly)
-            logger.warning(f"{EMOJI_WARNING} Asyncio event loop not running at exit. Attempting to run cleanup in a new loop.")
-            asyncio.run(cleanup()) # Try to run it in a new loop if necessary
-    except RuntimeError: # No running event loop
-        logger.error(f"{EMOJI_ERROR} No asyncio event loop found at exit. Cleanup might be incomplete.")
+        cleanup() # Call synchronous cleanup directly
+        logger.info(f"{EMOJI_SUCCESS} Synchronous cleanup task completed.")
     except Exception as e:
         logger.error(f"{EMOJI_ERROR} Error during atexit cleanup: {e}", exc_info=True)
-    logger.info(f"{EMOJI_SUCCESS} Cleanup process initiated via atexit.")
+    logger.info(f"{EMOJI_SUCCESS} Cleanup process initiated via atexit finished.")
 
 atexit.register(_atexit_cleanup)
 
