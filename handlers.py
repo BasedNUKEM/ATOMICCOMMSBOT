@@ -35,14 +35,51 @@ from utils import (
 )
 # from db import Database  # Assuming db.py might be refactored or this import is conditional
 # Conditional import for Database to avoid circular dependency if db.py imports from handlers
-try:
-    from db import Database, DatabaseError
-except ImportError:
-    Database = None # type: ignore
-    DatabaseError = None # type: ignore 
-    # This allows the module to be imported and type-checked even if db.py has issues,
-    # but runtime will fail if Database is actually used without being properly initialized.
 
+# Define placeholder types/classes that are always valid for type hints and isinstance/except.
+class _DatabasePlaceholder:
+    """Placeholder for Database type when db.py is not available."""
+    pass
+
+class _DatabaseErrorPlaceholder(Exception): # Must be an Exception subclass
+    """Placeholder for DatabaseError type when db.py is not available."""
+    pass
+
+# These will be the names used throughout the code for type hints and runtime checks.
+# They default to placeholders.
+Database: type = _DatabasePlaceholder
+DatabaseError: type[Exception] = _DatabaseErrorPlaceholder # Ensure it's an exception type
+
+# This flag indicates if the real Database class was successfully imported.
+_real_db_imported = False
+
+try:
+    # Attempt to import the real Database and DatabaseError classes
+    from db import Database as _ImportedDatabase, DatabaseError as _ImportedDatabaseError
+    
+    # Validate that imported names are actual types/classes suitable for use
+    if not isinstance(_ImportedDatabase, type):
+        # Use logging module directly as 'logger' instance might not be defined yet
+        logging.error("Imported 'Database' from db.py is not a class. Using placeholder.")
+    elif not (isinstance(_ImportedDatabaseError, type) and issubclass(_ImportedDatabaseError, Exception)):
+        logging.error("Imported 'DatabaseError' from db.py is not an Exception subclass. Using placeholder.")
+    else:
+        # If validation passes, assign the real classes
+        Database = _ImportedDatabase
+        DatabaseError = _ImportedDatabaseError
+        _real_db_imported = True
+        logging.info("Successfully imported and validated Database and DatabaseError from db.py")
+
+except ImportError:
+    logging.warning(
+        "Failed to import Database or DatabaseError from db.py. "
+        "Database features will be unavailable. Using placeholders."
+    )
+except Exception as e: # Catch other potential errors during import or validation
+    logging.error(
+        f"An unexpected error occurred during import or validation of Database/DatabaseError: {e}. "
+        "Using placeholders."
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -51,12 +88,14 @@ logger = logging.getLogger(__name__)
 
 # --- Helper Functions Specific to Handlers (if any) ---
 
-async def _get_db_instance(context: ContextTypes.DEFAULT_TYPE) -> Database | None:
+async def _get_db_instance(context: ContextTypes.DEFAULT_TYPE) -> "Database" | None:
     """Safely retrieves the database instance from bot_data."""
-    if Database is None: # Check if Database class itself is None (due to import error)
-        logger.error("Database class not imported. DB features will not work.")
+    if not _real_db_imported: # Check if the real Database class was successfully imported
+        logger.error("Real Database class not imported. DB features will not work.")
         return None
+    
     db_instance = context.bot_data.get('db')
+    # If _real_db_imported is True, 'Database' refers to the actual imported class.
     if not isinstance(db_instance, Database):
         logger.error("Database instance not found or not of correct type in bot_data.")
         return None
@@ -1255,14 +1294,14 @@ async def mute_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             user_id=target_user_id,
             permissions=permissions_to_set,
             until_date=until_date_ts # Pass None for permanent, or timestamp for temporary
-        )
+          )
         
         name_to_show = escape_markdown_v2(target_username_display or f"User {target_user_id}")
-        duration_readable = f\"for {duration_str}\" if duration_delta.total_seconds() > 0 else "permanently \\(until /unmute\\)"
+        duration_readable = f"for {duration_str}" if duration_delta.total_seconds() > 0 else "permanently \\(until /unmute\\)"
         
         mute_message = f"{EMOJI_NO_ENTRY} {name_to_show} has been muted {duration_readable}\\. Reason: {escape_markdown_v2(reason)}\\. Sweet silence\\."
         await safe_markdown_message(update, mute_message, logger, reply_to=False, parse_mode=ParseMode.MARKDOWN_V2)
-        
+      
         # Log mute to DB if needed
         if db:
             await db.log_moderation_action(chat_id, target_user_id, "mute", reason, admin_user_id, duration_delta)
