@@ -88,7 +88,7 @@ logger = logging.getLogger(__name__)
 
 # --- Helper Functions Specific to Handlers (if any) ---
 
-async def _get_db_instance(context: ContextTypes.DEFAULT_TYPE) -> "Database" | None:
+async def _get_db_instance(context: ContextTypes.DEFAULT_TYPE) -> Database | None:
     """Safely retrieves the database instance from bot_data."""
     if not _real_db_imported: # Check if the real Database class was successfully imported
         logger.error("Real Database class not imported. DB features will not work.")
