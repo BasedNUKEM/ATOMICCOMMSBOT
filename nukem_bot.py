@@ -11,6 +11,8 @@ This module contains the main bot implementation including:
 - Error handling
 """
 
+print("--- SCRIPT nukem_bot.py STARTED ---") # First line of the script
+
 # Standard library imports
 import asyncio
 import atexit
@@ -40,6 +42,7 @@ from telegram.error import NetworkError, BadRequest, TelegramError # Added Teleg
 
 # Local imports
 from db import Database, DatabaseError
+print("--- IMPORTS COMPLETED ---") # After all imports
 from constants import (
     NUKEM_QUOTES, NUKEM_REACTIONS_POSITIVE, NUKEM_REACTIONS_NEGATIVE,
     NUKEM_RATINGS, ALIEN_SCAN_REPORTS, PROJECT_INFO, ADMIN_USER_IDS,
